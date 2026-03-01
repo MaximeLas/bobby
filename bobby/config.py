@@ -26,3 +26,8 @@ TRANSCRIPT_FILE = WORKSPACE_DIR / "meeting_transcript.txt"
 PROGRESS_FILE = WORKSPACE_DIR / "agent_progress.txt"
 PAUSE_FLAG_FILE = WORKSPACE_DIR / "pause_transcription.flag"
 BOBBY_SPEECH_FILE = WORKSPACE_DIR / "bobby_last_speech.txt"
+
+# Discord configuration (only used in Discord mode)
+DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
+DISCORD_GUILD_ID = os.environ.get("DISCORD_GUILD_ID", "")
+DISCORD_CHANNEL_ID = os.environ.get("DISCORD_CHANNEL_ID", "")

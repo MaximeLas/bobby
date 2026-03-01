@@ -11,6 +11,13 @@ import sys
 from datetime import datetime
 
 from bobby.config import TRANSCRIPT_FILE, PROGRESS_FILE, PAUSE_FLAG_FILE, BOBBY_SPEECH_FILE, WORKSPACE_DIR
+from bobby.agent_runner import (
+    detect_trigger,
+    extract_answer as _extract_answer,
+    get_recent_context as _get_recent_context,
+    launch_agent as _launch_agent,
+    resume_agent as _resume_agent,
+)
 
 # Debounce window (seconds)
 DEBOUNCE_SECONDS = 30
@@ -70,24 +77,11 @@ class Orchestrator:
         Returns:
             String containing recent transcript lines
         """
-        try:
-            with open(TRANSCRIPT_FILE, 'r') as f:
-                all_lines = f.readlines()
-                recent = all_lines[-lines:] if len(all_lines) > lines else all_lines
-                return ''.join(recent)
-        except FileNotFoundError:
-            print(f"Warning: {TRANSCRIPT_FILE} not found")
-            return ""
-        except Exception as e:
-            print(f"Error reading transcript: {e}")
-            return ""
+        return _get_recent_context(TRANSCRIPT_FILE, lines=lines)
 
     def extract_answer(self, text):
         """
         Extract answer between question and 'thank you bobby'.
-
-        This function attempts to find the answer provided by the user
-        after Bobby asks a question and before they say "thank you bobby".
 
         Args:
             text: Text containing the answer and trigger phrase
@@ -95,33 +89,7 @@ class Orchestrator:
         Returns:
             Extracted answer text
         """
-        lower_text = text.lower()
-
-        # Find "thank you bobby" trigger
-        thank_you_variants = ['thank you, bobby', 'thank you bobby', 'thanks bobby']
-        trigger_index = -1
-
-        for variant in thank_you_variants:
-            idx = lower_text.rfind(variant)
-            if idx != -1:
-                trigger_index = idx
-                break
-
-        if trigger_index == -1:
-            # No trigger found, return the whole text as answer
-            return text.strip()
-
-        # Get text before "thank you bobby"
-        before_trigger = text[:trigger_index]
-
-        # Split into lines and get the last few (the answer)
-        lines = before_trigger.split('\n')
-        # Filter out empty lines
-        non_empty = [line.strip() for line in lines if line.strip()]
-
-        # Return last 1-3 lines as the answer
-        answer_lines = non_empty[-3:] if len(non_empty) >= 3 else non_empty
-        return '\n'.join(answer_lines).strip()
+        return _extract_answer(text)
 
     def speak_bob(self, text):
         """
@@ -198,89 +166,9 @@ class Orchestrator:
         print(context)
         print("=" * 60 + "\n")
 
-        # Add session marker (don't clear file - keep history like transcript)
-        try:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            with open(PROGRESS_FILE, 'a') as f:
-                f.write(f"\n=== New Agent Session: {timestamp} ===\n\n")
-            print(f"Started new session in {PROGRESS_FILE}")
-        except Exception as e:
-            print(f"Error writing to progress file: {e}")
-
-        # Build prompt with meeting context reference
-        prompt = f"""You are Bobby, an AI assistant helping in a live product meeting.
-
-Recent meeting discussion:
-{context}
-
-Task: Build the feature requested in the discussion above.
-
-IMPORTANT: The transcript may contain multiple speakers (Max, Michelle, Kevin) but without speaker labels.
-Pay attention to conversational context to understand who is saying what and what the requirements are.
-
-As you work, write LIVE updates to @agent_progress.txt in this format:
-- PROGRESS: -> Doing something...
-- PROGRESS:   ✓ Completed step
-- QUESTION: Your question (then stop and wait)
-- COMPLETE: Summary + URL
-
-CRITICAL INSTRUCTIONS FOR PROGRESS UPDATES:
-
-Write progress updates to @agent_progress.txt using EXACTLY this format:
-
-1. FIRST: Immediately write this EXACT line: "PROGRESS: -> Starting task"
-2. Do some work
-3. Write ONE line: "PROGRESS:   ✓ [what you completed]"
-4. Do more work
-5. Write ONE line: "COMPLETE: [summary] at http://localhost:5173"
-
-STRICT RULES:
-- Each Write operation = EXACTLY ONE LINE starting with "PROGRESS:" or "COMPLETE:" or "QUESTION:"
-- NO empty lines, NO numbered lists, NO markdown formatting
-- ALWAYS use append mode (never overwrite the file)
-- Write 3-5 updates total (not 20+)
-
-Example - THREE separate Write operations:
-  Write #1:  "PROGRESS: -> Starting task"
-  Write #2:  "PROGRESS: -> Analyzing requirements"
-  Write #3:  "PROGRESS:   ✓ Created component"
-  Write #4:  "PROGRESS: -> Testing component"
-  Write #5:  "PROGRESS:   ✓ Component tested"
-  Write #6:  "COMPLETE: Feature live at http://localhost:5173"
-
-WRONG (do NOT do this):
-  - Writing empty lines
-  - Writing "1. Task" or numbered lists
-  - Writing multiple PROGRESS lines in one Write operation
-  - Clearing or overwriting the file
-
-If you need clarification, write QUESTION and stop.
-Otherwise, complete the task autonomously.
-
-Deploy to localhost (Vite will auto-reload).
-Reference the full meeting transcript at @meeting_transcript.txt if you need more context."""
-
-        # Run Claude Code in target workspace directory with permissions
-        print("Executing: claude -p --dangerously-skip-permissions [prompt]")
-        print(f"Working directory: {WORKSPACE_DIR}")
-        print("Agent is now running...\n")
-
         self.agent_running = True
-
         try:
-            result = subprocess.run(
-                ['claude', '-p', '--dangerously-skip-permissions', prompt],
-                capture_output=False,  # Let output go to terminal
-                text=True,
-                cwd=str(WORKSPACE_DIR)
-            )
-
-            print(f"\nAgent process exited with code: {result.returncode}")
-
-        except FileNotFoundError:
-            print("ERROR: 'claude' command not found. Is Claude Code CLI installed?")
-        except Exception as e:
-            print(f"ERROR launching agent: {e}")
+            _launch_agent(context, WORKSPACE_DIR, PROGRESS_FILE)
         finally:
             self.agent_running = False
 
@@ -301,29 +189,9 @@ Reference the full meeting transcript at @meeting_transcript.txt if you need mor
         print(f"Answer: {answer}")
         print("=" * 60 + "\n")
 
-        prompt = f"""The answer to your question is: {answer}
-
-Please continue with the task."""
-
-        print("Executing: claude -p --continue [answer]")
-        print("Agent is now running...\n")
-
         self.agent_running = True
-
         try:
-            result = subprocess.run(
-                ['claude', '-p', '--dangerously-skip-permissions', '--continue', prompt],
-                capture_output=False,  # Let output go to terminal
-                text=True,
-                cwd=str(WORKSPACE_DIR)
-            )
-
-            print(f"\nAgent process exited with code: {result.returncode}")
-
-        except FileNotFoundError:
-            print("ERROR: 'claude' command not found. Is Claude Code CLI installed?")
-        except Exception as e:
-            print(f"ERROR resuming agent: {e}")
+            _resume_agent(answer, WORKSPACE_DIR)
         finally:
             self.agent_running = False
 
@@ -366,17 +234,12 @@ Please continue with the task."""
                 print(f"[{timestamp}] New transcript content ({len(new_content)} chars)")
                 print(f"[DEBUG] Content preview: {new_content[:200]!r}")
 
-                # Check for triggers (case-insensitive)
-                lower_content = new_content.lower()
-
-                # Remove all commas and extra spaces to make matching more flexible
-                # This handles: "Hey, Bobby, please build this." → "hey bobby please build this"
-                normalized_content = ' '.join(lower_content.replace(',', '').replace('.', '').split())
-                print(f"[DEBUG] Normalized content: {normalized_content[:100]!r}")
-                print(f"[DEBUG] Checking for 'hey bobby please build this' trigger")
+                # Check for triggers using shared detection logic
+                trigger = detect_trigger(new_content)
+                print(f"[DEBUG] Trigger detection result: {trigger}")
 
                 # Trigger 1: Launch agent
-                if 'hey bobby please build this' in normalized_content:
+                if trigger == "launch":
                     # Debounce check
                     time_since_last = time.time() - self.last_trigger_time
 
@@ -409,7 +272,7 @@ Please continue with the task."""
                     self.launch_agent(context)
 
                 # Trigger 2: Resume with answer
-                elif 'thank you bobby' in normalized_content or 'thanks bobby' in normalized_content:
+                elif trigger == "resume":
                     # Only resume if agent was running (asked a question)
                     # For MVP, we'll always try to resume when we see this trigger
 

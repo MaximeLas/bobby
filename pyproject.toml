@@ -11,6 +11,11 @@ dependencies = [
     "rich>=14.3.3",
 ]
 
+[project.optional-dependencies]
+discord = [
+    "py-cord[voice]>=2.6.0",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
