@@ -135,6 +135,11 @@ External tools:
 - `tmux` — Multi-pane terminal management
 - BlackHole — Virtual audio device for capturing meeting audio (`brew install blackhole-2ch`)
 
+Discord mode additionally requires:
+- `ffmpeg` — Audio encoding/decoding for Pycord voice (`brew install ffmpeg`)
+- `opus` — Audio codec for Discord voice receive (`brew install opus`)
+- Install Python deps: `uv sync --extra discord`
+
 ## Roadmap
 
 The current setup is a local testing rig (mic → transcript → agent → notifications). The next phase is making Bobby a real meeting participant:
@@ -150,3 +155,4 @@ The current setup is a local testing rig (mic → transcript → agent → notif
 - Audio capture currently defaults to `USE_DEFAULT_MIC = True` in `audio_capture.py` — set to `False` for BlackHole/production
 - The orchestrator starts reading from the END of the transcript file to avoid replaying old triggers
 - TTS uses `subprocess.run()` for audio playback — never use `os.system()` (shell injection risk)
+- **Plan files** are stored in `~/.claude/plans/`, NOT in the project's `.claude/plans/` directory. After compaction, if a plan file reference appears missing from the project directory, check `~/.claude/plans/` — that's where Claude Code stores them

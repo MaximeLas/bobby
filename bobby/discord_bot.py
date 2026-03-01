@@ -5,16 +5,29 @@ Bobby Discord Bot
 Discord integration for Bobby. Provides slash commands for triggering agent tasks
 and monitors agent progress, posting updates as Discord embeds with detail threads.
 
-Phase 1: Text-based slash commands + progress monitoring (no voice yet).
+Phase 1: Text-based slash commands + progress monitoring.
+Phase 2: Voice receive — Bobby joins voice channels and transcribes via Assembly AI.
 """
 
 import asyncio
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
 
 import discord
 from dotenv import load_dotenv
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%H:%M:%S",
+)
+# Silence noisy Discord internals (gateway handshake, HTTP, opus decode errors)
+logging.getLogger("discord.gateway").setLevel(logging.WARNING)
+logging.getLogger("discord.client").setLevel(logging.WARNING)
+logging.getLogger("discord.http").setLevel(logging.WARNING)
+logging.getLogger("discord.opus").setLevel(logging.WARNING)
 
 from bobby.config import (
     DISCORD_BOT_TOKEN,
@@ -36,6 +49,15 @@ from bobby.agent_runner import (
 # Load .env for bot token
 load_dotenv()
 
+# Load opus library for voice receive (Pycord can't find it automatically on macOS)
+if not discord.opus.is_loaded():
+    try:
+        discord.opus.load_opus("/opt/homebrew/lib/libopus.dylib")
+        print("Loaded libopus from Homebrew")
+    except Exception as e:
+        print(f"Warning: Could not load libopus: {e}")
+        print("Voice receive will not work. Install with: brew install opus")
+
 # Bot setup
 intents = discord.Intents.default()
 intents.message_content = True
@@ -51,6 +73,10 @@ bobby_cmds = bot.create_group("bobby", "Bobby AI meeting assistant")
 # Agent state
 _agent_running = False
 _agent_task = None  # asyncio.Task for the running agent
+
+# Voice state
+_voice_sink = None  # AssemblyAISink instance (active during voice recording)
+_transcript_watcher_task = None  # async task watching transcript for voice triggers
 
 
 @bot.event
@@ -344,6 +370,191 @@ async def status(ctx: discord.ApplicationContext):
         await ctx.respond(f"Bobby is working. Latest: {latest}")
     else:
         await ctx.respond("Bobby is idle. Use `/bobby build <task>` to start a task.")
+
+
+# --- Voice Commands ---
+
+async def _recording_finished_callback(sink, channel):
+    """Called by Pycord when stop_recording() is invoked. No-op for us."""
+    print("Recording finished callback fired")
+
+
+async def _watch_transcript_for_triggers(text_channel):
+    """
+    Watch meeting_transcript.txt for voice triggers.
+
+    Runs as an async task while Bobby is in a voice channel. Polls the
+    transcript file for new content and checks for trigger phrases using
+    the shared detect_trigger() function. Manages debounce state and
+    file position locally.
+    """
+    global _agent_running, _agent_task
+
+    import time
+
+    # Start reading from end of file
+    if TRANSCRIPT_FILE.exists():
+        with open(TRANSCRIPT_FILE, "r") as f:
+            f.seek(0, 2)
+            last_position = f.tell()
+    else:
+        last_position = 0
+
+    last_trigger_time = 0
+    DEBOUNCE_SECONDS = 30
+
+    print("Transcript watcher started — listening for voice triggers")
+
+    while True:
+        await asyncio.sleep(2)
+
+        if not TRANSCRIPT_FILE.exists():
+            continue
+
+        try:
+            with open(TRANSCRIPT_FILE, "r") as f:
+                f.seek(0, 2)
+                file_size = f.tell()
+                if file_size < last_position:
+                    last_position = 0
+                f.seek(last_position)
+                new_content = f.read()
+                last_position = f.tell()
+        except Exception:
+            continue
+
+        if not new_content.strip():
+            continue
+
+        trigger = detect_trigger(new_content)
+        if trigger is None:
+            continue
+
+        # Debounce
+        now = time.time()
+        if now - last_trigger_time < DEBOUNCE_SECONDS:
+            print(f"Trigger '{trigger}' debounced (within {DEBOUNCE_SECONDS}s)")
+            continue
+        last_trigger_time = now
+
+        if trigger == "launch":
+            if _agent_running:
+                print("Voice trigger detected but agent already running")
+                try:
+                    await text_channel.send("I heard you, but I'm already working on something!")
+                except Exception:
+                    pass
+                continue
+
+            print("Voice trigger detected: launching agent")
+            context = get_recent_context(TRANSCRIPT_FILE, lines=15)
+            task_name = "Voice-triggered task"
+
+            _agent_task = asyncio.create_task(
+                run_agent(text_channel, task_name, context)
+            )
+
+        elif trigger == "resume":
+            # Phase 4 will implement resume via voice
+            print("Resume trigger detected (not yet implemented in Discord mode)")
+
+
+@bobby_cmds.command(description="Join your voice channel and start listening")
+async def join(ctx: discord.ApplicationContext):
+    """Join the user's voice channel and start transcribing."""
+    global _voice_sink, _transcript_watcher_task
+
+    # Check if user is in a voice channel
+    if not ctx.author.voice or not ctx.author.voice.channel:
+        await ctx.respond("You need to be in a voice channel first!", ephemeral=True)
+        return
+
+    voice_channel = ctx.author.voice.channel
+
+    # Check if already connected
+    if ctx.voice_client and ctx.voice_client.is_connected():
+        await ctx.respond("I'm already in a voice channel! Use `/bobby leave` first.", ephemeral=True)
+        return
+
+    await ctx.respond(f"Joining **{voice_channel.name}** and starting transcription...", ephemeral=True)
+
+    try:
+        # Connect to voice channel
+        vc = await voice_channel.connect()
+
+        # Create and start the custom sink
+        from bobby.discord_sink import AssemblyAISink
+
+        _voice_sink = AssemblyAISink(guild=ctx.guild)
+        if not _voice_sink.start_transcription():
+            await ctx.followup.send("Failed to start transcription — check ASSEMBLYAI_API_KEY.", ephemeral=True)
+            await vc.disconnect()
+            _voice_sink = None
+            return
+
+        # Start recording with the custom sink
+        vc.start_recording(_voice_sink, _recording_finished_callback, ctx.channel)
+
+        # Write session header to transcript
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        with open(TRANSCRIPT_FILE, "a") as f:
+            f.write(f"\n[{timestamp}] === Bobby joined Discord voice: {voice_channel.name} ===\n\n")
+
+        # Start watching transcript for voice triggers
+        _transcript_watcher_task = asyncio.create_task(
+            _watch_transcript_for_triggers(ctx.channel)
+        )
+
+        print(f"Joined voice channel: {voice_channel.name}")
+        print(f"Recording + transcription active")
+
+    except Exception as e:
+        print(f"Error joining voice channel: {e}")
+        await ctx.followup.send(f"Error joining voice channel: {e}", ephemeral=True)
+        _voice_sink = None
+
+
+@bobby_cmds.command(description="Leave the voice channel and stop listening")
+async def leave(ctx: discord.ApplicationContext):
+    """Leave the voice channel and stop transcribing."""
+    global _voice_sink, _transcript_watcher_task
+
+    if not ctx.voice_client or not ctx.voice_client.is_connected():
+        await ctx.respond("I'm not in a voice channel.", ephemeral=True)
+        return
+
+    await ctx.respond("Leaving voice channel...", ephemeral=True)
+
+    try:
+        # Stop the transcript watcher
+        if _transcript_watcher_task:
+            _transcript_watcher_task.cancel()
+            _transcript_watcher_task = None
+
+        # Stop recording (triggers cleanup on the sink)
+        if ctx.voice_client.recording:
+            ctx.voice_client.stop_recording()
+
+        # Stop transcription explicitly (in case cleanup didn't run)
+        if _voice_sink:
+            _voice_sink.stop_transcription()
+            _voice_sink = None
+
+        # Disconnect from voice
+        await ctx.voice_client.disconnect()
+
+        # Write session footer to transcript
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        with open(TRANSCRIPT_FILE, "a") as f:
+            f.write(f"\n[{timestamp}] === Bobby left Discord voice ===\n\n")
+
+        print("Left voice channel, transcription stopped")
+
+    except Exception as e:
+        print(f"Error leaving voice channel: {e}")
+        await ctx.followup.send(f"Error: {e}", ephemeral=True)
 
 
 def run_bot():
