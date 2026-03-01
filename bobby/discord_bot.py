@@ -310,6 +310,13 @@ async def run_agent(channel, task_name, context):
             launch_agent, context, WORKSPACE_DIR, PROGRESS_FILE
         )
         print(f"Agent finished with return code: {return_code}")
+
+        # Announce completion in voice
+        if return_code == 0:
+            await _speak_in_voice("Done. The task is complete.")
+        else:
+            await _speak_in_voice("Something went wrong. Check the progress for details.")
+
     except Exception as e:
         print(f"Agent error: {e}")
         try:
@@ -372,6 +379,75 @@ async def status(ctx: discord.ApplicationContext):
         await ctx.respond("Bobby is idle. Use `/bobby build <task>` to start a task.")
 
 
+# --- Voice Output ---
+
+async def _speak_in_voice(text):
+    """
+    Generate TTS audio and play it in the Discord voice channel.
+
+    No-op if the bot is not connected to a voice channel.
+    Tries ElevenLabs first, falls back to macOS 'say' if unavailable.
+    """
+    # Find our voice client across all guilds
+    vc = None
+    for voice_client in bot.voice_clients:
+        if voice_client.is_connected():
+            vc = voice_client
+            break
+
+    if vc is None:
+        print(f"Bobby says (no voice channel): {text}")
+        return
+
+    temp_file = "/tmp/bobby_discord_speech.mp3"
+
+    try:
+        from bobby.tts import generate_audio
+
+        print(f"Bobby speaking in voice (ElevenLabs): {text}")
+        audio_bytes = await asyncio.to_thread(generate_audio, text)
+
+        with open(temp_file, "wb") as f:
+            f.write(audio_bytes)
+
+    except Exception as e:
+        # Extract just the useful error message, not the full HTTP headers
+        error_msg = str(e)
+        if hasattr(e, 'body') and isinstance(e.body, dict):
+            detail = e.body.get('detail', {})
+            if isinstance(detail, dict):
+                error_msg = detail.get('message', error_msg)
+        print(f"ElevenLabs failed: {error_msg} — falling back to macOS say")
+        # macOS 'say' can output to AIFF file, which FFmpeg can decode
+        temp_file = "/tmp/bobby_discord_speech.aiff"
+        try:
+            import subprocess
+            await asyncio.to_thread(
+                subprocess.run,
+                ["say", "-o", temp_file, text],
+                check=True,
+                timeout=10,
+            )
+        except Exception as fallback_error:
+            print(f"Fallback TTS also failed: {fallback_error}")
+            return
+
+    try:
+        if vc.is_playing():
+            vc.stop()
+
+        source = discord.FFmpegPCMAudio(temp_file)
+        vc.play(source)
+
+        while vc.is_playing():
+            await asyncio.sleep(0.5)
+
+        print("Bobby finished speaking")
+
+    except Exception as e:
+        print(f"Voice playback error: {e}")
+
+
 # --- Voice Commands ---
 
 async def _recording_finished_callback(sink, channel):
@@ -400,8 +476,8 @@ async def _watch_transcript_for_triggers(text_channel):
     else:
         last_position = 0
 
-    last_trigger_time = 0
-    DEBOUNCE_SECONDS = 30
+    last_launch_time = 0
+    DEBOUNCE_SECONDS = 10
 
     print("Transcript watcher started — listening for voice triggers")
 
@@ -430,23 +506,21 @@ async def _watch_transcript_for_triggers(text_channel):
         if trigger is None:
             continue
 
-        # Debounce
-        now = time.time()
-        if now - last_trigger_time < DEBOUNCE_SECONDS:
-            print(f"Trigger '{trigger}' debounced (within {DEBOUNCE_SECONDS}s)")
-            continue
-        last_trigger_time = now
-
         if trigger == "launch":
+            # Debounce launch triggers (prevents transcript echo double-fires)
+            now = time.time()
+            if now - last_launch_time < DEBOUNCE_SECONDS:
+                print(f"Launch trigger debounced ({now - last_launch_time:.0f}s < {DEBOUNCE_SECONDS}s)")
+                continue
+            last_launch_time = now
+
             if _agent_running:
                 print("Voice trigger detected but agent already running")
-                try:
-                    await text_channel.send("I heard you, but I'm already working on something!")
-                except Exception:
-                    pass
+                await _speak_in_voice("I'm already working on something. Hold on.")
                 continue
 
             print("Voice trigger detected: launching agent")
+            await _speak_in_voice("On it. Let me work on that.")
             context = get_recent_context(TRANSCRIPT_FILE, lines=15)
             task_name = "Voice-triggered task"
 

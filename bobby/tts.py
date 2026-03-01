@@ -22,9 +22,54 @@ BOBBY_MODEL = "eleven_turbo_v2_5"  # Fast, high-quality model
 BOBBY_OUTPUT_FORMAT = "mp3_44100_128"  # Standard MP3 format
 
 
+def generate_audio(text):
+    """
+    Generate speech audio bytes using ElevenLabs.
+
+    Args:
+        text: What Bobby should say
+
+    Returns:
+        bytes: MP3 audio data
+
+    Raises:
+        Exception: If ElevenLabs API call fails
+    """
+    audio = client.text_to_speech.convert(
+        text=text,
+        voice_id=BOBBY_VOICE_ID,
+        model_id=BOBBY_MODEL,
+        output_format=BOBBY_OUTPUT_FORMAT,
+    )
+
+    # Collect all audio chunks into bytes
+    audio_bytes = b""
+    for chunk in audio:
+        audio_bytes += chunk
+
+    return audio_bytes
+
+
+def play_local(audio_bytes):
+    """
+    Play audio bytes locally via macOS afplay.
+
+    Args:
+        audio_bytes: MP3 audio data to play
+    """
+    temp_file = "/tmp/bobby_speech.mp3"
+    with open(temp_file, "wb") as f:
+        f.write(audio_bytes)
+
+    subprocess.run(["afplay", temp_file], check=True)
+
+
 def speak(text):
     """
-    Make Bobby speak using ElevenLabs text-to-speech.
+    Make Bobby speak using ElevenLabs text-to-speech (local playback).
+
+    Convenience wrapper that generates audio and plays it locally.
+    Used by the local-mode orchestrator.
 
     Args:
         text: What Bobby should say
@@ -35,28 +80,8 @@ def speak(text):
     print(f"🎙️  Bobby: {text}")
 
     try:
-        # Generate audio using ElevenLabs
-        # Note: audio is a generator that yields chunks
-        audio = client.text_to_speech.convert(
-            text=text,
-            voice_id=BOBBY_VOICE_ID,
-            model_id=BOBBY_MODEL,
-            output_format=BOBBY_OUTPUT_FORMAT,
-        )
-
-        # Collect all audio chunks into bytes
-        audio_bytes = b""
-        for chunk in audio:
-            audio_bytes += chunk
-
-        # Save audio to temporary file
-        temp_file = "/tmp/bobby_speech.mp3"
-        with open(temp_file, "wb") as f:
-            f.write(audio_bytes)
-
-        # Play the audio using macOS's built-in afplay (no dependencies needed!)
-        # This is faster and more reliable than ffmpeg/mpv for our use case
-        subprocess.run(["afplay", temp_file], check=True)
+        audio_bytes = generate_audio(text)
+        play_local(audio_bytes)
         return True
 
     except Exception as e:
