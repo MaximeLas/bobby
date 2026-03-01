@@ -1,0 +1,61 @@
+.logo-section {
+  padding: 4rem 2rem;
+  background: white;
+}
+
+.logo-section-container {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.logo-section-heading {
+  text-align: center;
+  font-size: 0.875rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6b7280;
+  margin-bottom: 2.5rem;
+}
+
+.logo-section-grid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 3rem 4rem;
+}
+
+.logo-item {
+  flex: 0 0 auto;
+}
+
+.logo-placeholder {
+  font-size: 1.125rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: #9ca3af;
+  padding: 1rem 1.5rem;
+  filter: grayscale(100%);
+  opacity: 0.6;
+  transition: opacity 0.3s ease;
+}
+
+.logo-placeholder:hover {
+  opacity: 0.8;
+}
+
+@media (max-width: 768px) {
+  .logo-section {
+    padding: 3rem 1.5rem;
+  }
+
+  .logo-section-grid {
+    gap: 2rem 2.5rem;
+  }
+
+  .logo-placeholder {
+    font-size: 0.875rem;
+    padding: 0.75rem 1rem;
+  }
+}

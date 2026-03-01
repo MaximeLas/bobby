@@ -1,0 +1,12 @@
+[project]
+name = "bobby"
+version = "0.1.0"
+description = "AI meeting assistant that executes code tasks in real-time"
+requires-python = ">=3.12"
+dependencies = [
+    "assemblyai>=0.52.4",
+    "elevenlabs>=2.37.0",
+    "pyaudio>=0.2.14",
+    "python-dotenv>=1.2.1",
+    "rich>=14.3.3",
+]

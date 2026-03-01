@@ -1,0 +1,36 @@
+.features {
+  padding: 80px 20px;
+  background-color: #f9fafb;
+}
+
+.features-container {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.features-heading {
+  font-size: 42px;
+  font-weight: 800;
+  text-align: center;
+  margin-bottom: 16px;
+  color: #1f2937;
+}
+
+.features-subheading {
+  font-size: 18px;
+  text-align: center;
+  color: #6b7280;
+  margin-bottom: 60px;
+}
+
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 32px;
+}
+
+@media (max-width: 768px) {
+  .features-heading {
+    font-size: 32px;
+  }
+}

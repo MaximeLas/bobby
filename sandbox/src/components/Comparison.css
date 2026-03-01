@@ -1,0 +1,145 @@
+.comparison {
+  padding: 80px 0;
+  background: #fafafa;
+}
+
+.comparison-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.comparison-heading {
+  text-align: center;
+  font-size: 2.5rem;
+  font-weight: 700;
+  margin-bottom: 48px;
+  color: #1a1a1a;
+}
+
+.comparison-table-wrapper {
+  overflow-x: auto;
+  border-radius: 12px;
+  background: white;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 600px;
+}
+
+.comparison-table thead {
+  background: #f8f9fa;
+}
+
+.comparison-table th {
+  padding: 24px 16px;
+  text-align: center;
+  font-weight: 600;
+  font-size: 1rem;
+  color: #1a1a1a;
+  border-bottom: 2px solid #e9ecef;
+}
+
+.feature-column {
+  text-align: left;
+  width: 40%;
+}
+
+.product-column {
+  width: 20%;
+}
+
+.flowtask-column {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.product-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.flowtask-column .product-name {
+  color: white;
+  font-weight: 700;
+}
+
+.badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: rgba(255, 255, 255, 0.95);
+  color: #667eea;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-radius: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.comparison-table tbody tr {
+  border-bottom: 1px solid #e9ecef;
+}
+
+.comparison-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.comparison-table td {
+  padding: 20px 16px;
+  text-align: center;
+}
+
+.feature-name {
+  text-align: left;
+  font-weight: 500;
+  color: #1a1a1a;
+}
+
+.flowtask-cell {
+  background: rgba(102, 126, 234, 0.05);
+}
+
+.checkmark {
+  color: #10b981;
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.cross {
+  color: #cbd5e1;
+  font-size: 1.5rem;
+}
+
+/* Mobile responsive */
+@media (max-width: 768px) {
+  .comparison {
+    padding: 60px 0;
+  }
+
+  .comparison-heading {
+    font-size: 2rem;
+    margin-bottom: 32px;
+  }
+
+  .comparison-table-wrapper {
+    border-radius: 8px;
+  }
+
+  .comparison-table {
+    font-size: 0.9rem;
+  }
+
+  .comparison-table th,
+  .comparison-table td {
+    padding: 16px 12px;
+  }
+
+  .badge {
+    font-size: 0.65rem;
+    padding: 3px 8px;
+  }
+}

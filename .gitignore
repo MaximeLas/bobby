@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+*.egg-info/
+
+# Environment & secrets
+.env
+.env.local
+
+# Runtime state files
+**/meeting_transcript.txt
+**/agent_progress.txt
+**/bobby_last_speech.txt
+**/pause_transcription.flag
+
+# Node.js (sandbox)
+sandbox/node_modules/
+sandbox/dist/
+
+# macOS
+.DS_Store
+
+# IDE
+.cursor/
+.vscode/

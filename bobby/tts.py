@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""
+Text-to-Speech for Bobby using ElevenLabs
+
+Bobby speaks with an Eastern European accent using ElevenLabs TTS API.
+"""
+
+import os
+import subprocess
+from dotenv import load_dotenv
+from elevenlabs.client import ElevenLabs
+
+# Load environment variables
+load_dotenv()
+
+# Initialize ElevenLabs client
+client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
+
+# Bobby's voice configuration
+BOBBY_VOICE_ID = "lIaJUjvN2nyLPU9wRIa0"  # Eastern European voice
+BOBBY_MODEL = "eleven_turbo_v2_5"  # Fast, high-quality model
+BOBBY_OUTPUT_FORMAT = "mp3_44100_128"  # Standard MP3 format
+
+
+def speak(text):
+    """
+    Make Bobby speak using ElevenLabs text-to-speech.
+
+    Args:
+        text: What Bobby should say
+
+    Returns:
+        bool: True if speech was successful, False otherwise
+    """
+    print(f"🎙️  Bobby: {text}")
+
+    try:
+        # Generate audio using ElevenLabs
+        # Note: audio is a generator that yields chunks
+        audio = client.text_to_speech.convert(
+            text=text,
+            voice_id=BOBBY_VOICE_ID,
+            model_id=BOBBY_MODEL,
+            output_format=BOBBY_OUTPUT_FORMAT,
+        )
+
+        # Collect all audio chunks into bytes
+        audio_bytes = b""
+        for chunk in audio:
+            audio_bytes += chunk
+
+        # Save audio to temporary file
+        temp_file = "/tmp/bobby_speech.mp3"
+        with open(temp_file, "wb") as f:
+            f.write(audio_bytes)
+
+        # Play the audio using macOS's built-in afplay (no dependencies needed!)
+        # This is faster and more reliable than ffmpeg/mpv for our use case
+        subprocess.run(["afplay", temp_file], check=True)
+        return True
+
+    except Exception as e:
+        print(f"❌ TTS Error: {e}")
+        print(f"💬 Fallback text: {text}")
+        # Fallback to macOS say command
+        try:
+            subprocess.run(["say", text], check=True, timeout=10)
+        except Exception as fallback_error:
+            print(f"❌ Fallback also failed: {fallback_error}")
+        return False
