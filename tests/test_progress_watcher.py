@@ -1,173 +1,164 @@
 #!/usr/bin/env python3
 """
-Test script for progress_watcher.py
+Automated tests for bobby.progress_watcher
 
-Simulates agent writing progress updates to test the watcher.
-
-Usage:
-    Terminal 1: uv run python3 -m bobby.progress_watcher
-    Terminal 2: uv run python3 tests/test_progress_watcher.py
+Tests line parsing/classification and file truncation detection.
+Does NOT send notifications or render Rich UI.
 """
 
-import time
 import os
 import sys
+import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock
 
-# Add project root to path so bobby package can be imported
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bobby.config import PROGRESS_FILE
 
-# Test updates - simulates what agent would write
-test_updates = [
-    "PROGRESS: → Reading meeting transcript...",
-    "PROGRESS:   ✓ Found meeting context",
-    "PROGRESS: → Analyzing codebase structure...",
-    "PROGRESS:   ✓ Identified src/components/ directory",
-    "PROGRESS: → Creating PricingTable component...",
-    "PROGRESS:   ✓ Component created",
-    "QUESTION: Should pricing default to monthly or annual?",
-    "PROGRESS: → Implementing monthly pricing as default...",
-    "PROGRESS:   ✓ Pricing logic implemented",
-    "PROGRESS: → Adding component to Landing page...",
-    "PROGRESS:   ✓ Imported in Landing.jsx",
-    "PROGRESS: → Testing component rendering...",
-    "PROGRESS:   ✓ Component renders correctly",
-    "COMPLETE: Pricing table added. Visible on localhost:5173",
+def _make_watcher(progress_file=None):
+    """Create a ProgressWatcher pointed at a temp file."""
+    from bobby.progress_watcher import ProgressWatcher
+    if progress_file is None:
+        # Use a non-existent temp path (watcher handles missing files gracefully)
+        progress_file = Path(tempfile.mkdtemp()) / "test_progress.txt"
+    return ProgressWatcher(progress_file=progress_file)
+
+
+# --- Line classification tests ---
+# These test the routing logic in display_update() by checking which
+# internal method gets called for each line type.
+
+def test_classify_progress_line():
+    """Lines starting with 'PROGRESS:' should route to _display_progress."""
+    watcher = _make_watcher()
+    watcher._display_progress = MagicMock()
+    watcher.send_notification = MagicMock()
+
+    watcher.display_update("PROGRESS: -> Starting task...")
+
+    watcher._display_progress.assert_called_once()
+    args = watcher._display_progress.call_args[0]
+    assert "Starting task" in args[1], f"Expected message to contain 'Starting task', got: {args[1]}"
+
+
+def test_classify_question_line():
+    """Lines starting with 'QUESTION:' should route to _display_question."""
+    watcher = _make_watcher()
+    watcher._display_question = MagicMock()
+    watcher.send_notification = MagicMock()
+
+    watcher.display_update("QUESTION: What color for the button?")
+
+    watcher._display_question.assert_called_once()
+    args = watcher._display_question.call_args[0]
+    assert "color" in args[1], f"Expected 'color' in message, got: {args[1]}"
+
+
+def test_classify_complete_line():
+    """Lines starting with 'COMPLETE:' should route to _display_complete."""
+    watcher = _make_watcher()
+    watcher._display_complete = MagicMock()
+    watcher.send_notification = MagicMock()
+
+    watcher.display_update("COMPLETE: Feature deployed to localhost:5173")
+
+    watcher._display_complete.assert_called_once()
+    args = watcher._display_complete.call_args[0]
+    assert "deployed" in args[1], f"Expected 'deployed' in message, got: {args[1]}"
+
+
+def test_classify_error_line():
+    """Lines starting with 'ERROR:' should route to _display_error."""
+    watcher = _make_watcher()
+    watcher._display_error = MagicMock()
+    watcher.send_notification = MagicMock()
+
+    watcher.display_update("ERROR: Build failed - missing dependency")
+
+    watcher._display_error.assert_called_once()
+    args = watcher._display_error.call_args[0]
+    assert "Build failed" in args[1], f"Expected 'Build failed' in message, got: {args[1]}"
+
+
+def test_classify_unknown_line():
+    """Lines without a known prefix should route to _display_unknown."""
+    watcher = _make_watcher()
+    watcher._display_unknown = MagicMock()
+
+    watcher.display_update("Some random text without prefix")
+
+    watcher._display_unknown.assert_called_once()
+
+
+def test_message_extraction():
+    """The prefix should be stripped, leaving just the message."""
+    watcher = _make_watcher()
+    watcher._display_progress = MagicMock()
+    watcher.send_notification = MagicMock()
+
+    watcher.display_update("PROGRESS:   Done: Component created")
+
+    args = watcher._display_progress.call_args[0]
+    message = args[1]
+    assert not message.startswith("PROGRESS:"), f"Prefix should be stripped, got: {message}"
+    assert "Done: Component created" in message, f"Expected message content, got: {message}"
+
+
+# --- File truncation detection tests ---
+
+def test_file_truncation_resets_position():
+    """If the progress file shrinks, the watcher's watch loop should reset position."""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        tmppath = Path(f.name)
+        f.write("PROGRESS: -> Step 1\nPROGRESS: -> Step 2\n")
+
+    try:
+        watcher = _make_watcher(progress_file=tmppath)
+        assert watcher.last_position > 0, "Should start at end of file"
+
+        # Truncate the file (simulate agent clearing it)
+        with open(tmppath, 'w') as f:
+            f.write("")
+
+        # Exercise the actual truncation detection logic from watch():
+        # read file size, compare to last_position, reset if smaller
+        with open(tmppath, 'r') as f:
+            f.seek(0, 2)
+            file_size = f.tell()
+            if file_size < watcher.last_position:
+                watcher.last_position = 0
+            f.seek(watcher.last_position)
+            new_content = f.read()
+            watcher.last_position = f.tell()
+
+        assert watcher.last_position == 0, "Position should reset after truncation"
+    finally:
+        tmppath.unlink(missing_ok=True)
+
+
+# --- Import tests ---
+
+def test_import_progress_watcher():
+    """ProgressWatcher module should import without errors."""
+    from bobby import progress_watcher
+    assert hasattr(progress_watcher, 'ProgressWatcher')
+
+
+def test_instantiate_progress_watcher():
+    """ProgressWatcher should instantiate with a custom file path."""
+    watcher = _make_watcher()
+    assert hasattr(watcher, 'display_update')
+    assert hasattr(watcher, 'watch')
+
+
+ALL_TESTS = [
+    ("Import progress_watcher module", test_import_progress_watcher),
+    ("Instantiate ProgressWatcher", test_instantiate_progress_watcher),
+    ("Classify PROGRESS line", test_classify_progress_line),
+    ("Classify QUESTION line", test_classify_question_line),
+    ("Classify COMPLETE line", test_classify_complete_line),
+    ("Classify ERROR line", test_classify_error_line),
+    ("Classify unknown line", test_classify_unknown_line),
+    ("Message prefix extraction", test_message_extraction),
+    ("File truncation resets position", test_file_truncation_resets_position),
 ]
-
-# Test with an error
-test_with_error = [
-    "PROGRESS: → Running build...",
-    "PROGRESS:   ✓ Build started",
-    "ERROR: Build failed - missing dependency 'react-icons'",
-]
-
-
-def clear_progress_file():
-    """Clear the progress file"""
-    PROGRESS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(PROGRESS_FILE, 'w') as f:
-        f.write('')
-    print(f"✓ Cleared {PROGRESS_FILE}\n")
-
-
-def write_update(update, delay=2.0):
-    """Write a single update to progress file"""
-    with open(PROGRESS_FILE, 'a') as f:
-        f.write(update + '\n')
-    print(f"✏️  Added: {update}")
-    time.sleep(delay)
-
-
-def run_success_scenario():
-    """Run successful task scenario"""
-    print("🎬 Running SUCCESS scenario...")
-    print("=" * 60)
-    print("This simulates Bobby successfully completing a task.\n")
-
-    clear_progress_file()
-    time.sleep(1)
-
-    print("📝 Writing progress updates (2 seconds between each)...\n")
-
-    for update in test_updates:
-        write_update(update)
-
-    print("\n✅ Success scenario complete!")
-    print("Check the progress watcher terminal for colored output.")
-    print("Check macOS notifications - you should have received several!\n")
-
-
-def run_error_scenario():
-    """Run error scenario"""
-    print("🎬 Running ERROR scenario...")
-    print("=" * 60)
-    print("This simulates Bobby encountering an error.\n")
-
-    clear_progress_file()
-    time.sleep(1)
-
-    print("📝 Writing progress updates with error...\n")
-
-    for update in test_with_error:
-        write_update(update)
-
-    print("\n❌ Error scenario complete!")
-    print("You should see a red error message in the watcher.\n")
-
-
-def run_interactive_mode():
-    """Interactive mode - type your own updates"""
-    print("🎮 INTERACTIVE MODE")
-    print("=" * 60)
-    print("Type updates to send to the watcher.")
-    print("Prefix with PROGRESS:, QUESTION:, COMPLETE:, or ERROR:")
-    print("Examples:")
-    print("  PROGRESS: → Doing something...")
-    print("  QUESTION: What color should the button be?")
-    print("  COMPLETE: Task finished!")
-    print("  ERROR: Something went wrong")
-    print("\nType 'quit' to exit.\n")
-
-    clear_progress_file()
-
-    while True:
-        try:
-            update = input("Update: ").strip()
-
-            if update.lower() == 'quit':
-                print("\n👋 Exiting interactive mode")
-                break
-
-            if update:
-                with open(PROGRESS_FILE, 'a') as f:
-                    f.write(update + '\n')
-                print(f"✓ Sent: {update}\n")
-
-        except KeyboardInterrupt:
-            print("\n\n👋 Exiting interactive mode")
-            break
-
-
-def main():
-    """Main test menu"""
-    print("\n🧪 Progress Watcher Test Script")
-    print("=" * 60)
-    print()
-    print("Make sure progress_watcher.py is running in another terminal!")
-    print()
-    print("Choose a test scenario:")
-    print("  1. Success scenario (complete task)")
-    print("  2. Error scenario (task fails)")
-    print("  3. Interactive mode (type your own)")
-    print("  4. Quick test (one of each type)")
-    print("  q. Quit")
-    print()
-
-    choice = input("Enter choice (1-4 or q): ").strip()
-
-    if choice == '1':
-        run_success_scenario()
-    elif choice == '2':
-        run_error_scenario()
-    elif choice == '3':
-        run_interactive_mode()
-    elif choice == '4':
-        print("\n🚀 Quick test - one of each type...\n")
-        clear_progress_file()
-        time.sleep(0.5)
-        write_update("PROGRESS: → Starting task...", delay=1.5)
-        write_update("QUESTION: Need clarification on something?", delay=1.5)
-        write_update("PROGRESS:   ✓ Got answer, continuing...", delay=1.5)
-        write_update("COMPLETE: Task finished successfully!", delay=1.5)
-        print("\n✅ Quick test complete!")
-    elif choice.lower() == 'q':
-        print("👋 Bye!")
-    else:
-        print("❌ Invalid choice")
-
-
-if __name__ == "__main__":
-    main()

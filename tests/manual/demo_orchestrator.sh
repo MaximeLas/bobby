@@ -4,9 +4,16 @@
 #
 # This simulates a meeting transcript and shows how the orchestrator responds.
 #
-# Usage: ./tests/demo_orchestrator.sh
+# Usage: ./tests/manual/demo_orchestrator.sh
 #        (run from the project root)
+#
+# WHAT TO VERIFY:
+#   - Orchestrator detects the trigger in the other terminal
+#   - Bobby speaks or prints acknowledgment
+#   - Agent launch attempt is logged
 
+# NOTE: Paths hardcoded here because shell can't import bobby.config.
+# Must match the defaults in bobby/config.py.
 TRANSCRIPT_FILE="sandbox/meeting_transcript.txt"
 PROGRESS_FILE="sandbox/agent_progress.txt"
 

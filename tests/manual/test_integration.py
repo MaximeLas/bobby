@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 """
-Bobby Voice Test with Transcript Watching (No Agent Execution)
+Bobby Full Pipeline Test (Manual)
 
-This script:
-- Starts audio capture (microphone -> Assembly AI -> transcript)
-- Watches transcript for "Hey Bobby, please build this"
-- Responds with Bobby's Eastern European voice
-- Does NOT launch Claude Code agent (saves credits!)
+Starts audio capture + transcript watcher in voice-only mode.
+Speak "Hey Bobby, please build this" into your mic and Bobby responds.
+Does NOT launch Claude Code agent (saves credits).
 
-Usage: uv run python3 tests/test_integration.py
-Then say: "Hey Bobby, please build this"
+Requires: Microphone, ASSEMBLYAI_API_KEY in .env, ELEVENLABS_API_KEY in .env
+
+Usage: uv run python3 tests/manual/test_integration.py
+
+WHAT TO VERIFY:
+  - Audio capture starts (microphone turns on)
+  - Speaking "Hey Bobby, please build this" triggers detection
+  - Bobby responds with voice (ElevenLabs or macOS fallback)
+  - Transcription pauses during Bobby's speech, then resumes
+  - No agent is launched (test mode)
 """
 
 import subprocess
@@ -22,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 
 # Add project root to path so bobby package can be imported
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from bobby.config import TRANSCRIPT_FILE, PAUSE_FLAG_FILE, WORKSPACE_DIR
 

@@ -2,26 +2,26 @@
 """
 Bobby Test Runner
 
-Runs all automated tests and validates that interactive test scripts load correctly.
-Use this as the single entry point for verifying the test suite.
+Discovers and runs all automated tests. Each test module in tests/ exposes an
+ALL_TESTS list of (name, function) tuples. This runner collects them all,
+runs them, and reports results.
 
 Usage:
-    uv run python3 tests/run_tests.py           # Run all automated tests
-    python3 tests/run_tests.py                   # Also works without uv run
+    uv run python3 tests/run_tests.py         # Run all automated tests
+    python3 tests/run_tests.py                 # Also works directly
 
-Interactive tests (run manually):
-    uv run python3 tests/test_tts.py             # Voice output test (needs API key)
-    uv run python3 tests/test_orchestrator.py    # Trigger simulation (needs 2 terminals)
-    uv run python3 tests/test_progress_watcher.py # Progress display (needs 2 terminals)
-    uv run python3 tests/test_integration.py     # Full pipeline (needs mic + API key)
-    uv run python3 tests/test_notifications.py   # macOS notifications
-    ./tests/demo_orchestrator.sh                 # Shell demo for orchestrator
-    ./tests/demo_progress_watcher.sh             # Shell demo for progress watcher
+Manual tests (require human verification) live in tests/manual/:
+    uv run python3 tests/manual/test_tts.py
+    uv run python3 tests/manual/test_notifications.py
+    uv run python3 tests/manual/test_orchestrator.py
+    uv run python3 tests/manual/test_progress_watcher.py
+    uv run python3 tests/manual/test_integration.py
+    ./tests/manual/demo_orchestrator.sh
+    ./tests/manual/demo_progress_watcher.sh
 """
 
 import importlib.util
 import sys
-import os
 from pathlib import Path
 
 # Add project root to path so bobby package can be imported
@@ -29,145 +29,104 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from bobby.config import TRANSCRIPT_FILE, PROGRESS_FILE, PAUSE_FLAG_FILE, BOBBY_SPEECH_FILE
 
-# Files created during tests that should be cleaned up
+# Files that tests might create — cleaned up after each run
 TEST_ARTIFACTS = [TRANSCRIPT_FILE, PROGRESS_FILE, PAUSE_FLAG_FILE, BOBBY_SPEECH_FILE]
 
-
-def run_section(title):
-    """Print a section header."""
-    print()
-    print("=" * 60)
-    print(f"  {title}")
-    print("=" * 60)
-
-
-def cleanup_test_artifacts():
-    """Remove any files created during test runs."""
-    cleaned = []
-    for path in TEST_ARTIFACTS:
-        if path.exists():
-            path.unlink()
-            cleaned.append(path.name)
-    return cleaned
+# Test modules to discover (each must expose ALL_TESTS)
+TEST_MODULES = [
+    "test_config",
+    "test_orchestrator",
+    "test_progress_watcher",
+]
 
 
-def test_imports():
-    """Validate that all Python test files load without errors."""
-    run_section("Import Validation")
+def load_tests():
+    """Load ALL_TESTS from each test module."""
+    tests_dir = Path(__file__).parent
+    all_tests = []
 
-    test_files = sorted(Path(__file__).parent.glob("*.py"))
-    test_files = [f for f in test_files if f.name != "run_tests.py"]
-
-    passed = 0
-    failed = 0
-
-    for test_file in test_files:
-        try:
-            spec = importlib.util.spec_from_file_location("test_module", test_file)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            print(f"  OK   {test_file.name}")
-            passed += 1
-        except SystemExit:
-            print(f"  OK   {test_file.name}")
-            passed += 1
-        except Exception as e:
-            print(f"  FAIL {test_file.name}: {e}")
-            failed += 1
-
-    print(f"\n  Imports: {passed} OK, {failed} failed")
-    return failed == 0
-
-
-def test_verify_orchestrator():
-    """Run the automated orchestrator verification suite."""
-    run_section("Orchestrator Verification (6 tests)")
-
-    # Import and run verify_orchestrator
-    spec = importlib.util.spec_from_file_location(
-        "verify_orchestrator",
-        Path(__file__).parent / "verify_orchestrator.py"
-    )
-    mod = importlib.util.module_from_spec(spec)
-
-    try:
+    for module_name in TEST_MODULES:
+        module_path = tests_dir / f"{module_name}.py"
+        spec = importlib.util.spec_from_file_location(module_name, module_path)
+        mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        result = mod.main()
-        return result == 0
-    except SystemExit as e:
-        return e.code == 0
-    except Exception as e:
-        print(f"  FAIL - Unexpected error: {e}")
-        return False
+
+        module_tests = getattr(mod, "ALL_TESTS", [])
+        for name, func in module_tests:
+            all_tests.append((module_name, name, func))
+
+    return all_tests
 
 
-def test_config_paths():
-    """Verify config paths resolve correctly."""
-    run_section("Config Path Validation")
+def run_tests():
+    """Run all tests and return results."""
+    tests = load_tests()
+    results = []
+    current_module = None
 
-    from bobby.config import PROJECT_ROOT, WORKSPACE_DIR
+    for module_name, test_name, test_func in tests:
+        if module_name != current_module:
+            current_module = module_name
+            print()
+            print(f"  {module_name}")
+            print(f"  {'-' * len(module_name)}")
 
-    checks = [
-        ("PROJECT_ROOT exists", PROJECT_ROOT.exists()),
-        ("WORKSPACE_DIR parent exists", WORKSPACE_DIR.parent.exists()),
-        ("bobby package exists", (PROJECT_ROOT / "bobby" / "__init__.py").exists()),
-        ("config.py exists", (PROJECT_ROOT / "bobby" / "config.py").exists()),
-    ]
+        try:
+            test_func()
+            print(f"    PASS  {test_name}")
+            results.append((test_name, True, None))
+        except Exception as e:
+            print(f"    FAIL  {test_name}")
+            print(f"          {e}")
+            results.append((test_name, False, str(e)))
 
-    all_ok = True
-    for name, result in checks:
-        status = "OK" if result else "FAIL"
-        if not result:
-            all_ok = False
-        print(f"  {status:4s} {name}")
-
-    return all_ok
+    return results
 
 
 def main():
     """Run the full test suite."""
     print()
-    print("Bobby Test Suite")
-    print("~~~~~~~~~~~~~~~~")
+    print("=" * 60)
+    print("  Bobby Automated Test Suite")
+    print("=" * 60)
 
-    # Track artifacts that exist before tests run
+    # Track pre-existing artifacts so we don't delete them
     pre_existing = {p for p in TEST_ARTIFACTS if p.exists()}
 
-    results = {}
-
-    # Run test sections
-    results["Config paths"] = test_config_paths()
-    results["Import validation"] = test_imports()
-    results["Orchestrator verification"] = test_verify_orchestrator()
+    # Run tests
+    results = run_tests()
 
     # Summary
-    run_section("Results")
+    passed = sum(1 for _, ok, _ in results if ok)
+    failed = sum(1 for _, ok, _ in results if not ok)
+    total = len(results)
 
-    all_passed = True
-    for name, passed in results.items():
-        status = "PASS" if passed else "FAIL"
-        if not passed:
-            all_passed = False
-        print(f"  {status}  {name}")
+    print()
+    print("=" * 60)
 
-    # Cleanup: only remove artifacts that didn't exist before tests ran
+    if failed:
+        print(f"  {passed}/{total} passed, {failed} FAILED")
+        print()
+        print("  Failed tests:")
+        for name, ok, err in results:
+            if not ok:
+                print(f"    - {name}: {err}")
+    else:
+        print(f"  All {total} tests passed.")
+
+    # Cleanup: remove artifacts created during this run
     new_artifacts = {p for p in TEST_ARTIFACTS if p.exists()} - pre_existing
     if new_artifacts:
         print()
-        print("  Cleaning up test artifacts...")
-        for path in new_artifacts:
+        print("  Cleaned up test artifacts:")
+        for path in sorted(new_artifacts):
             path.unlink()
-            print(f"    Removed {path.name}")
+            print(f"    {path.name}")
 
-    # Final verdict
-    print()
-    if all_passed:
-        print("  All tests passed.")
-    else:
-        print("  Some tests failed. See details above.")
+    print("=" * 60)
     print()
 
-    return 0 if all_passed else 1
+    return 0 if failed == 0 else 1
 
 
 if __name__ == "__main__":

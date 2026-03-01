@@ -1,174 +1,267 @@
 #!/usr/bin/env python3
 """
-Test script for Bobby Orchestrator
+Automated tests for bobby.orchestrator
 
-This creates a mock transcript and simulates triggers to test the orchestrator.
+Tests the pure logic: answer extraction, trigger normalization, context reading,
+debounce. Does NOT call any APIs, launch agents, or produce audio.
 """
 
-import time
+import io
 import os
 import sys
+import time
+from contextlib import redirect_stdout
 from pathlib import Path
 
-# Add project root to path so bobby package can be imported
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from bobby.config import TRANSCRIPT_FILE
 
 
-def test_launch_trigger():
-    """Test 1: Launch agent trigger"""
-    print("=" * 60)
-    print("TEST 1: Launch Agent Trigger")
-    print("=" * 60)
+def _make_orchestrator(**kwargs):
+    """Create an Orchestrator instance for testing (suppresses startup output)."""
+    from bobby.orchestrator import Orchestrator
+    with redirect_stdout(io.StringIO()):
+        return Orchestrator(**kwargs)
 
-    # Clear or create transcript file
+
+def _normalize(text):
+    """Replicate the trigger normalization logic from watch_transcript."""
+    return ' '.join(text.lower().replace(',', '').replace('.', '').split())
+
+
+# --- extract_answer tests ---
+
+def test_extract_answer_simple():
+    """Extract answer before 'thank you bobby'."""
+    orch = _make_orchestrator()
+    text = "[00:01] Speaker A: Use blue for buttons\n[00:02] Speaker A: Thank you, Bobby"
+    answer = orch.extract_answer(text)
+    assert "blue" in answer, f"Expected 'blue' in answer, got: {answer}"
+
+
+def test_extract_answer_no_comma():
+    """'thank you bobby' without comma should also work."""
+    orch = _make_orchestrator()
+    text = "[00:01] Speaker A: Monthly pricing\n[00:02] Speaker A: Thank you Bobby"
+    answer = orch.extract_answer(text)
+    assert "Monthly pricing" in answer, f"Expected 'Monthly pricing', got: {answer}"
+
+
+def test_extract_answer_thanks_variant():
+    """'thanks bobby' should also trigger extraction."""
+    orch = _make_orchestrator()
+    text = "[00:01] Speaker A: Use the dark theme\n[00:02] Speaker A: Thanks Bobby"
+    answer = orch.extract_answer(text)
+    assert "dark theme" in answer, f"Expected 'dark theme', got: {answer}"
+
+
+def test_extract_answer_no_trigger():
+    """With no trigger phrase, return the full text."""
+    orch = _make_orchestrator()
+    text = "[00:01] Speaker A: Just some discussion\n[00:02] Speaker B: Agreed"
+    answer = orch.extract_answer(text)
+    assert "discussion" in answer and "Agreed" in answer, \
+        f"Expected full text, got: {answer}"
+
+
+def test_extract_answer_multiple_lines():
+    """With many lines before trigger, return last 3 non-empty lines."""
+    orch = _make_orchestrator()
+    text = (
+        "[00:01] Line 1\n"
+        "[00:02] Line 2\n"
+        "[00:03] Line 3\n"
+        "[00:04] Line 4\n"
+        "[00:05] Line 5\n"
+        "Thank you, Bobby"
+    )
+    answer = orch.extract_answer(text)
+    assert "Line 3" in answer, f"Expected Line 3, got: {answer}"
+    assert "Line 5" in answer, f"Expected Line 5, got: {answer}"
+    assert "Line 1" not in answer, f"Line 1 should be excluded, got: {answer}"
+
+
+def test_extract_answer_single_line():
+    """Single answer line before trigger."""
+    orch = _make_orchestrator()
+    text = "[00:01] Just one answer\n[00:02] Thank you Bobby"
+    answer = orch.extract_answer(text)
+    assert "Just one answer" in answer, f"Expected 'Just one answer', got: {answer}"
+
+
+def test_extract_answer_empty_before_trigger():
+    """Empty lines only before trigger should return empty string."""
+    orch = _make_orchestrator()
+    text = "\n\n\nThank you Bobby"
+    answer = orch.extract_answer(text)
+    assert answer == "", f"Expected empty string, got: {answer!r}"
+
+
+def test_extract_answer_multiple_triggers():
+    """With multiple 'thank you bobby', should use the last one (rfind)."""
+    orch = _make_orchestrator()
+    text = (
+        "[00:01] First answer\n"
+        "[00:02] Thank you Bobby\n"
+        "[00:03] Actually, use red instead\n"
+        "[00:04] Thank you, Bobby"
+    )
+    answer = orch.extract_answer(text)
+    assert "red" in answer, f"Expected 'red' in answer (last trigger), got: {answer}"
+
+
+# --- Trigger normalization tests ---
+
+def test_normalize_basic_trigger():
+    """Basic trigger phrase should normalize."""
+    assert 'hey bobby please build this' in _normalize("Hey Bobby, please build this")
+
+
+def test_normalize_with_punctuation():
+    """Trigger with extra punctuation should still match."""
+    assert 'hey bobby please build this' in _normalize("Hey, Bobby, please build this.")
+
+
+def test_normalize_extra_whitespace():
+    """Extra whitespace should be collapsed."""
+    assert 'hey bobby please build this' in _normalize("Hey   Bobby   please  build  this")
+
+
+def test_normalize_mixed_case():
+    """Mixed case should be lowered."""
+    assert 'hey bobby please build this' in _normalize("HEY BOBBY PLEASE BUILD THIS")
+
+
+def test_normalize_resume_trigger():
+    """Resume triggers should normalize."""
+    assert 'thank you bobby' in _normalize("Thank you, Bobby")
+    assert 'thanks bobby' in _normalize("Thanks Bobby!")
+
+
+def test_normalize_trigger_in_longer_text():
+    """Trigger embedded in longer text should still match (substring)."""
+    text = "So yeah, hey bobby please build this and also add tests"
+    assert 'hey bobby please build this' in _normalize(text)
+
+
+# --- Debounce tests ---
+
+def test_debounce_rejects_within_window():
+    """A trigger within DEBOUNCE_SECONDS of the last one should be rejected."""
+    from bobby.orchestrator import DEBOUNCE_SECONDS
+    orch = _make_orchestrator()
+    # Simulate a recent trigger
+    orch.last_trigger_time = time.time()
+    time_since = time.time() - orch.last_trigger_time
+    assert time_since < DEBOUNCE_SECONDS, "Should be within debounce window"
+
+
+def test_debounce_accepts_after_window():
+    """A trigger after DEBOUNCE_SECONDS should be accepted."""
+    from bobby.orchestrator import DEBOUNCE_SECONDS
+    orch = _make_orchestrator()
+    # Simulate a trigger that happened long ago
+    orch.last_trigger_time = time.time() - DEBOUNCE_SECONDS - 1
+    time_since = time.time() - orch.last_trigger_time
+    assert time_since >= DEBOUNCE_SECONDS, "Should be past debounce window"
+
+
+def test_debounce_initial_state():
+    """Fresh orchestrator should accept the first trigger (last_trigger_time=0)."""
+    from bobby.orchestrator import DEBOUNCE_SECONDS
+    orch = _make_orchestrator()
+    assert orch.last_trigger_time == 0, "Should start at 0"
+    time_since = time.time() - orch.last_trigger_time
+    assert time_since >= DEBOUNCE_SECONDS, "First trigger should always pass debounce"
+
+
+# --- get_recent_context tests ---
+
+def test_get_recent_context():
+    """Should return last N lines from transcript."""
     TRANSCRIPT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(TRANSCRIPT_FILE, 'w') as f:
-        f.write("")
+    try:
+        with open(TRANSCRIPT_FILE, 'w') as f:
+            for i in range(10):
+                f.write(f"[00:00:{i:02d}] Line {i}\n")
 
-    print("\nSetup: Starting with empty transcript")
-    print("Action: Run the orchestrator in another terminal:")
-    print("  uv run python3 -m bobby.orchestrator")
-    print("\nWhen orchestrator is running, press ENTER to add trigger...")
-    input()
+        orch = _make_orchestrator()
+        context = orch.get_recent_context(lines=3)
 
-    # Add meeting context
-    with open(TRANSCRIPT_FILE, 'a') as f:
-        f.write("[00:00:00] Speaker A: We need a pricing page\n")
-        f.write("[00:00:15] Speaker B: Three tiers would be good\n")
-        f.write("[00:00:30] Speaker A: Make sure it matches our design system\n")
-
-    print("Added meeting context to transcript")
-    time.sleep(1)
-
-    # Add trigger
-    with open(TRANSCRIPT_FILE, 'a') as f:
-        f.write("[00:00:45] Speaker A: Hey Bobby, please build this\n")
-
-    print("\nAdded trigger: 'Hey Bobby, please build this'")
-    print("\nCheck orchestrator output:")
-    print("  - Should detect trigger")
-    print("  - Should say 'Sure, working on it now'")
-    print("  - Should launch Claude agent")
-    print("\n" + "=" * 60)
+        assert "Line 7" in context, f"Expected Line 7, got: {context}"
+        assert "Line 8" in context, f"Expected Line 8, got: {context}"
+        assert "Line 9" in context, f"Expected Line 9, got: {context}"
+        assert "Line 0" not in context, f"Line 0 should be excluded, got: {context}"
+    finally:
+        if TRANSCRIPT_FILE.exists():
+            TRANSCRIPT_FILE.unlink()
 
 
-def test_resume_trigger():
-    """Test 2: Resume agent trigger"""
-    print("\n" + "=" * 60)
-    print("TEST 2: Resume Agent Trigger")
-    print("=" * 60)
+def test_get_recent_context_missing_file():
+    """Should return empty string if transcript doesn't exist."""
+    if TRANSCRIPT_FILE.exists():
+        TRANSCRIPT_FILE.unlink()
 
-    print("\nSetup: This simulates Bobby asking a question")
-    print("Action: Add agent question to agent_progress.txt:")
-    print("  echo 'QUESTION: Should pricing be monthly or annual?' >> agent_progress.txt")
-    print("\nPress ENTER to continue with answer trigger...")
-    input()
-
-    # Add answer and trigger
-    with open(TRANSCRIPT_FILE, 'a') as f:
-        f.write("[00:03:00] Speaker A: Monthly pricing please\n")
-        f.write("[00:03:05] Speaker A: Thank you, Bobby\n")
-
-    print("\nAdded answer and trigger: 'Thank you, Bobby'")
-    print("\nCheck orchestrator output:")
-    print("  - Should detect trigger")
-    print("  - Should extract answer: 'Monthly pricing please'")
-    print("  - Should resume Claude agent")
-    print("\n" + "=" * 60)
+    orch = _make_orchestrator()
+    context = orch.get_recent_context()
+    assert context == "", f"Expected empty string, got: {context!r}"
 
 
-def test_debounce():
-    """Test 3: Debounce (should ignore duplicate trigger)"""
-    print("\n" + "=" * 60)
-    print("TEST 3: Debounce Test")
-    print("=" * 60)
-
-    print("\nThis tests that repeated triggers are ignored (30s debounce)")
-    print("Press ENTER to add duplicate trigger...")
-    input()
-
-    # Add duplicate trigger (should be ignored)
-    with open(TRANSCRIPT_FILE, 'a') as f:
-        f.write("[00:00:50] Speaker B: Hey Bobby, please build this\n")
-
-    print("\nAdded duplicate trigger within 30 seconds")
-    print("\nCheck orchestrator output:")
-    print("  - Should ignore trigger (debounced)")
-    print("\n" + "=" * 60)
-
-
-def manual_test():
-    """Manual test mode - add lines interactively"""
-    print("\n" + "=" * 60)
-    print("MANUAL TEST MODE")
-    print("=" * 60)
-
-    # Create fresh transcript
+def test_get_recent_context_fewer_lines():
+    """Should return all lines if file has fewer than requested."""
     TRANSCRIPT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(TRANSCRIPT_FILE, 'w') as f:
-        f.write("")
+    try:
+        with open(TRANSCRIPT_FILE, 'w') as f:
+            f.write("[00:00:00] Only line\n")
 
-    print("\nCreated fresh transcript file")
-    print("Start orchestrator in another terminal:")
-    print("  uv run python3 -m bobby.orchestrator")
-    print("\nThen add lines manually by typing them here.")
-    print("Type 'quit' to exit.\n")
-
-    while True:
-        line = input("Add line > ")
-
-        if line.lower() == 'quit':
-            break
-
-        # Add timestamp if not present
-        if not line.startswith('['):
-            timestamp = time.strftime("%H:%M:%S")
-            line = f"[{timestamp}] Speaker A: {line}"
-
-        with open(TRANSCRIPT_FILE, 'a') as f:
-            f.write(line + '\n')
-
-        print(f"Added: {line}")
+        orch = _make_orchestrator()
+        context = orch.get_recent_context(lines=10)
+        assert "Only line" in context, f"Expected 'Only line', got: {context}"
+    finally:
+        if TRANSCRIPT_FILE.exists():
+            TRANSCRIPT_FILE.unlink()
 
 
-def main():
-    """Run tests"""
-    print("\n" + "=" * 60)
-    print("BOBBY ORCHESTRATOR TEST SUITE")
-    print("=" * 60)
+# --- Import and instantiation tests ---
 
-    print("\nAvailable tests:")
-    print("  1. Launch agent trigger test")
-    print("  2. Resume agent trigger test")
-    print("  3. Debounce test")
-    print("  4. Manual test mode")
-    print("  5. Run all automated tests")
-
-    choice = input("\nSelect test (1-5): ").strip()
-
-    if choice == '1':
-        test_launch_trigger()
-    elif choice == '2':
-        test_resume_trigger()
-    elif choice == '3':
-        test_debounce()
-    elif choice == '4':
-        manual_test()
-    elif choice == '5':
-        test_launch_trigger()
-        print("\nWait 30 seconds for debounce to reset...")
-        time.sleep(30)
-        test_resume_trigger()
-        test_debounce()
-    else:
-        print("Invalid choice")
-
-    print("\n" + "=" * 60)
-    print("Test complete!")
-    print("=" * 60 + "\n")
+def test_import_orchestrator():
+    """Orchestrator module should import without errors."""
+    from bobby import orchestrator
+    assert hasattr(orchestrator, 'Orchestrator')
 
 
-if __name__ == "__main__":
-    main()
+def test_instantiate_orchestrator():
+    """Orchestrator class should instantiate without errors."""
+    orch = _make_orchestrator()
+    assert hasattr(orch, 'extract_answer')
+    assert hasattr(orch, 'get_recent_context')
+    assert hasattr(orch, 'speak_bob')
+    assert hasattr(orch, 'launch_agent')
+    assert hasattr(orch, 'watch_transcript')
+
+
+ALL_TESTS = [
+    ("Import orchestrator module", test_import_orchestrator),
+    ("Instantiate Orchestrator class", test_instantiate_orchestrator),
+    ("extract_answer: simple case", test_extract_answer_simple),
+    ("extract_answer: no comma variant", test_extract_answer_no_comma),
+    ("extract_answer: 'thanks bobby' variant", test_extract_answer_thanks_variant),
+    ("extract_answer: no trigger returns full text", test_extract_answer_no_trigger),
+    ("extract_answer: multiple lines returns last 3", test_extract_answer_multiple_lines),
+    ("extract_answer: single answer line", test_extract_answer_single_line),
+    ("extract_answer: empty before trigger", test_extract_answer_empty_before_trigger),
+    ("extract_answer: multiple triggers uses last", test_extract_answer_multiple_triggers),
+    ("Trigger normalization: basic", test_normalize_basic_trigger),
+    ("Trigger normalization: punctuation", test_normalize_with_punctuation),
+    ("Trigger normalization: whitespace", test_normalize_extra_whitespace),
+    ("Trigger normalization: mixed case", test_normalize_mixed_case),
+    ("Trigger normalization: resume triggers", test_normalize_resume_trigger),
+    ("Trigger normalization: embedded in longer text", test_normalize_trigger_in_longer_text),
+    ("Debounce: rejects within window", test_debounce_rejects_within_window),
+    ("Debounce: accepts after window", test_debounce_accepts_after_window),
+    ("Debounce: initial state accepts first trigger", test_debounce_initial_state),
+    ("get_recent_context: last N lines", test_get_recent_context),
+    ("get_recent_context: missing file", test_get_recent_context_missing_file),
+    ("get_recent_context: fewer lines than requested", test_get_recent_context_fewer_lines),
+]

@@ -3,9 +3,16 @@
 # Demo script for Bobby Progress Watcher
 # Shows what the watcher does in action.
 #
-# Usage: ./tests/demo_progress_watcher.sh
+# Usage: ./tests/manual/demo_progress_watcher.sh
 #        (run from the project root)
+#
+# WHAT TO VERIFY:
+#   - Colored terminal output (cyan/green/yellow/red for different types)
+#   - macOS notifications appear for each update
+#   - Timestamps on each line
 
+# NOTE: Path hardcoded here because shell can't import bobby.config.
+# Must match the default PROGRESS_FILE in bobby/config.py.
 PROGRESS_FILE="sandbox/agent_progress.txt"
 
 echo "Bobby Progress Watcher - Live Demo"
@@ -49,16 +56,16 @@ echo "   -> Reading transcript..."
 echo "PROGRESS: -> Reading meeting transcript..." >> "$PROGRESS_FILE"
 sleep 2
 
-echo "   Done: Found task"
-echo "PROGRESS:   Done: Identified task: Build pricing section" >> "$PROGRESS_FILE"
+echo "   ✓ Found task"
+echo "PROGRESS:   ✓ Identified task: Build pricing section" >> "$PROGRESS_FILE"
 sleep 2
 
 echo "   -> Creating components..."
 echo "PROGRESS: -> Creating PricingTable component..." >> "$PROGRESS_FILE"
 sleep 2
 
-echo "   Done: Component created"
-echo "PROGRESS:   Done: Component created successfully" >> "$PROGRESS_FILE"
+echo "   ✓ Component created"
+echo "PROGRESS:   ✓ Component created successfully" >> "$PROGRESS_FILE"
 sleep 2
 
 echo "   ? Asking question..."
@@ -69,8 +76,8 @@ echo "   -> Continuing work..."
 echo "PROGRESS: -> Implementing monthly pricing as default..." >> "$PROGRESS_FILE"
 sleep 2
 
-echo "   Done: Implementation complete"
-echo "PROGRESS:   Done: Monthly pricing implemented" >> "$PROGRESS_FILE"
+echo "   ✓ Implementation complete"
+echo "PROGRESS:   ✓ Monthly pricing implemented" >> "$PROGRESS_FILE"
 sleep 2
 
 echo "   Task complete!"
@@ -95,7 +102,7 @@ echo "Demo finished!"
 echo ""
 echo "To run the watcher manually:"
 echo "  Terminal 1: uv run python3 -m bobby.progress_watcher"
-echo "  Terminal 2: uv run python3 tests/test_progress_watcher.py"
+echo "  Terminal 2: uv run python3 tests/manual/test_progress_watcher.py"
 echo ""
 
 # Cleanup
