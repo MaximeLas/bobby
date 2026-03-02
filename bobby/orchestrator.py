@@ -256,7 +256,8 @@ class Orchestrator:
                     print(f"{'!' * 60}\n")
 
                     # Bobby acknowledges immediately (before agent launch)
-                    self.speak_bob("Very nice! I build for you now. Great success!")
+                    from bobby.prompts import VOICE_ACKNOWLEDGE_LAUNCH
+                    self.speak_bob(VOICE_ACKNOWLEDGE_LAUNCH)
 
                     # In test mode, stop here (don't launch agent)
                     if self.test_voice_only:

@@ -123,57 +123,8 @@ def build_agent_prompt(context):
     Returns:
         Complete prompt string
     """
-    return f"""You are Bobby, an AI assistant helping in a live product meeting.
-
-Recent meeting discussion:
-{context}
-
-Task: Build the feature requested in the discussion above.
-
-IMPORTANT: The transcript may contain multiple speakers (Max, Michelle, Kevin) but without speaker labels.
-Pay attention to conversational context to understand who is saying what and what the requirements are.
-
-As you work, write LIVE updates to @agent_progress.txt in this format:
-- PROGRESS: -> Doing something...
-- PROGRESS:   ✓ Completed step
-- QUESTION: Your question (then stop and wait)
-- COMPLETE: Summary + URL
-
-CRITICAL INSTRUCTIONS FOR PROGRESS UPDATES:
-
-Write progress updates to @agent_progress.txt using EXACTLY this format:
-
-1. FIRST: Immediately write this EXACT line: "PROGRESS: -> Starting task"
-2. Do some work
-3. Write ONE line: "PROGRESS:   ✓ [what you completed]"
-4. Do more work
-5. Write ONE line: "COMPLETE: [summary] at http://localhost:5173"
-
-STRICT RULES:
-- Each Write operation = EXACTLY ONE LINE starting with "PROGRESS:" or "COMPLETE:" or "QUESTION:"
-- NO empty lines, NO numbered lists, NO markdown formatting
-- ALWAYS use append mode (never overwrite the file)
-- Write 3-5 updates total (not 20+)
-
-Example - THREE separate Write operations:
-  Write #1:  "PROGRESS: -> Starting task"
-  Write #2:  "PROGRESS: -> Analyzing requirements"
-  Write #3:  "PROGRESS:   ✓ Created component"
-  Write #4:  "PROGRESS: -> Testing component"
-  Write #5:  "PROGRESS:   ✓ Component tested"
-  Write #6:  "COMPLETE: Feature live at http://localhost:5173"
-
-WRONG (do NOT do this):
-  - Writing empty lines
-  - Writing "1. Task" or numbered lists
-  - Writing multiple PROGRESS lines in one Write operation
-  - Clearing or overwriting the file
-
-If you need clarification, write QUESTION and stop.
-Otherwise, complete the task autonomously.
-
-Deploy to localhost (Vite will auto-reload).
-Reference the full meeting transcript at @meeting_transcript.txt if you need more context."""
+    from bobby.prompts import AGENT_PROMPT_TEMPLATE
+    return AGENT_PROMPT_TEMPLATE.format(context=context)
 
 
 # --- Agent Launch/Resume ---
@@ -243,7 +194,7 @@ def resume_agent(answer, workspace_dir):
     """
     prompt = f"""The answer to your question is: {answer}
 
-Please continue with the task."""
+Please continue with the task. Write progress updates to @agent_progress.txt using APPEND mode only (never overwrite). Use the same format: PROGRESS: and COMPLETE: prefixes."""
 
     print("Executing: claude -p --continue [answer]")
     print("Agent is now running...\n")

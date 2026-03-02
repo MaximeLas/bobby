@@ -7,13 +7,15 @@ and monitors agent progress, posting updates as Discord embeds with detail threa
 
 Phase 1: Text-based slash commands + progress monitoring.
 Phase 2: Voice receive — Bobby joins voice channels and transcribes via Assembly AI.
+Phase 3: Voice output — Bobby speaks in Discord via ElevenLabs TTS.
+Phase 4: Resume trigger, graceful shutdown, auto-join/leave, personality, AAI recovery.
 """
 
 import asyncio
 import logging
 import os
+import time
 from datetime import datetime
-from pathlib import Path
 
 import discord
 from dotenv import load_dotenv
@@ -27,12 +29,16 @@ logging.basicConfig(
 logging.getLogger("discord.gateway").setLevel(logging.WARNING)
 logging.getLogger("discord.client").setLevel(logging.WARNING)
 logging.getLogger("discord.http").setLevel(logging.WARNING)
-logging.getLogger("discord.opus").setLevel(logging.WARNING)
+logging.getLogger("discord.opus").setLevel(logging.ERROR)
+# voice_client logs a full traceback for harmless 4000 reconnects — suppress
+logging.getLogger("discord.voice_client").setLevel(logging.CRITICAL)
+logging.getLogger("discord.player").setLevel(logging.WARNING)
 
 from bobby.config import (
     DISCORD_BOT_TOKEN,
     DISCORD_GUILD_ID,
     DISCORD_CHANNEL_ID,
+    DISCORD_VOICE_CHANNEL_ID,
     PROGRESS_FILE,
     TRANSCRIPT_FILE,
     WORKSPACE_DIR,
@@ -44,6 +50,15 @@ from bobby.agent_runner import (
     detect_trigger,
     extract_answer,
     write_session_header,
+)
+from bobby.prompts import (
+    VOICE_ACKNOWLEDGE_LAUNCH,
+    VOICE_ANNOUNCE_COMPLETION,
+    VOICE_ANNOUNCE_ERROR,
+    VOICE_AGENT_BUSY,
+    VOICE_ACKNOWLEDGE_RESUME,
+    VOICE_ANNOUNCE_RESUME_COMPLETE,
+    VOICE_ANNOUNCE_QUESTION,
 )
 
 # Load .env for bot token
@@ -73,6 +88,7 @@ bobby_cmds = bot.create_group("bobby", "Bobby AI meeting assistant")
 # Agent state
 _agent_running = False
 _agent_task = None  # asyncio.Task for the running agent
+_agent_asked_question = False  # True when agent wrote a QUESTION: line
 
 # Voice state
 _voice_sink = None  # AssemblyAISink instance (active during voice recording)
@@ -99,6 +115,131 @@ async def on_ready():
         else:
             print(f"Warning: Channel {channel_id} not found")
     print("Bobby is ready.")
+
+    # Auto-join voice channel if configured
+    voice_channel_id = DISCORD_VOICE_CHANNEL_ID or os.getenv("DISCORD_VOICE_CHANNEL_ID", "")
+    if voice_channel_id:
+        await _auto_join_voice(voice_channel_id)
+
+
+async def _auto_join_voice(voice_channel_id):
+    """Auto-join a voice channel on startup and start transcription."""
+    global _voice_sink, _transcript_watcher_task
+
+    try:
+        channel = bot.get_channel(int(voice_channel_id))
+        if not channel:
+            print(f"Warning: Voice channel {voice_channel_id} not found, skipping auto-join")
+            return
+
+        # Check if anyone is in the channel (don't join empty channels)
+        human_members = [m for m in channel.members if not m.bot]
+        if not human_members:
+            print(f"Voice channel {channel.name} is empty, skipping auto-join")
+            return
+
+        print(f"Auto-joining voice channel: {channel.name}")
+        vc = await channel.connect()
+
+        # Wait for voice websocket to stabilize — Pycord sometimes drops and
+        # reconnects immediately after connect (code 4000). Starting recording
+        # too early means it gets lost in the reconnect.
+        await asyncio.sleep(2)
+
+        from bobby.discord_sink import AssemblyAISink
+        _voice_sink = AssemblyAISink(guild=channel.guild)
+        if not _voice_sink.start_transcription():
+            print("Failed to start transcription during auto-join")
+            await vc.disconnect()
+            _voice_sink = None
+            return
+
+        vc.start_recording(_voice_sink, _recording_finished_callback, None)
+
+        # Write session header to transcript
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        with open(TRANSCRIPT_FILE, "a") as f:
+            f.write(f"\n[{timestamp}] === Bobby joined Discord voice: {channel.name} ===\n\n")
+
+        # Find the text channel for progress updates
+        text_channel_id = DISCORD_CHANNEL_ID or os.getenv("DISCORD_CHANNEL_ID", "")
+        text_channel = bot.get_channel(int(text_channel_id)) if text_channel_id else None
+
+        _transcript_watcher_task = asyncio.create_task(
+            _watch_transcript_for_triggers(text_channel)
+        )
+
+        print(f"Auto-joined {channel.name} — recording + transcription active")
+
+    except Exception as e:
+        print(f"Auto-join failed: {e}")
+
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    """Auto-join when someone enters the configured voice channel, auto-leave when empty."""
+    # Don't trigger on the bot's own state changes
+    if member.id == bot.user.id:
+        return
+
+    # --- Auto-join: someone joined the configured voice channel ---
+    voice_channel_id = DISCORD_VOICE_CHANNEL_ID or os.getenv("DISCORD_VOICE_CHANNEL_ID", "")
+    if (voice_channel_id and after.channel
+            and str(after.channel.id) == voice_channel_id
+            and (before.channel is None or before.channel != after.channel)):
+        # Check if bot is already in voice
+        vc = member.guild.voice_client
+        if not vc or not vc.is_connected():
+            print(f"{member.display_name} joined {after.channel.name}, auto-joining")
+            await _auto_join_voice(voice_channel_id)
+            return
+
+    # --- Auto-leave: someone left the channel the bot is in ---
+    if not before.channel:
+        return
+    if before.channel == after.channel:
+        return
+
+    vc = member.guild.voice_client
+    if not vc or vc.channel != before.channel:
+        return
+
+    # Check if any humans remain
+    human_members = [m for m in before.channel.members if not m.bot]
+    if len(human_members) == 0:
+        print(f"All humans left {before.channel.name}, auto-leaving")
+        await _cleanup_voice(vc)
+
+
+async def _cleanup_voice(vc=None):
+    """Clean up voice connection, sink, and transcript watcher."""
+    global _voice_sink, _transcript_watcher_task
+
+    if _transcript_watcher_task:
+        _transcript_watcher_task.cancel()
+        _transcript_watcher_task = None
+
+    if vc and vc.recording:
+        try:
+            vc.stop_recording()
+        except Exception:
+            pass
+
+    if _voice_sink:
+        _voice_sink.stop_transcription()
+        _voice_sink = None
+
+    if vc and vc.is_connected():
+        await vc.disconnect()
+
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    try:
+        with open(TRANSCRIPT_FILE, "a") as f:
+            f.write(f"\n[{timestamp}] === Bobby left Discord voice ===\n\n")
+    except Exception:
+        pass
+
+    print("Left voice channel, transcription stopped")
 
 
 # --- Progress Monitoring ---
@@ -145,8 +286,15 @@ def build_progress_embed(task_name, lines, status="in_progress"):
         "question": discord.Color.orange(),
     }
 
+    # Check if agent provided a TASK: line — use it as the title
+    title = task_name
+    for line in lines:
+        if line.startswith("TASK:"):
+            title = line.replace("TASK:", "").strip()
+            break
+
     embed = discord.Embed(
-        title=f"Bobby — {task_name[:200]}",
+        title=f"Bobby — {title[:200]}",
         color=colors.get(status, discord.Color.greyple()),
     )
 
@@ -154,15 +302,20 @@ def build_progress_embed(task_name, lines, status="in_progress"):
     if lines:
         status_lines = []
         for line in lines[-8:]:  # Show last 8 lines max
-            if line.startswith("PROGRESS:"):
+            if line.startswith("TASK:"):
+                continue  # Task name is in the title, not the body
+            elif line.startswith("PROGRESS:"):
                 msg = line.replace("PROGRESS:", "").strip()
+                # Normalize ASCII arrow to Unicode (agent doesn't always use →)
+                if msg.startswith("-> "):
+                    msg = "→ " + msg[3:]
                 status_lines.append(msg)
             elif line.startswith("COMPLETE:"):
                 msg = line.replace("COMPLETE:", "").strip()
                 status_lines.append(f"**Done:** {msg}")
             elif line.startswith("QUESTION:"):
                 msg = line.replace("QUESTION:", "").strip()
-                status_lines.append(f"**Question:** {msg}")
+                status_lines.append(f"\n**Question:** {msg}")
             elif line.startswith("ERROR:"):
                 msg = line.replace("ERROR:", "").strip()
                 status_lines.append(f"**Error:** {msg}")
@@ -188,7 +341,7 @@ async def monitor_progress(channel, thread, task_name, status_msg=None):
     Runs as an async task. Polls the file every 3 seconds and updates
     the embed only when content changes.
     """
-    global _agent_running
+    global _agent_running, _agent_asked_question
 
     # Seek to end of progress file to only show new content
     if PROGRESS_FILE.exists():
@@ -199,7 +352,6 @@ async def monitor_progress(channel, thread, task_name, status_msg=None):
         last_position = 0
 
     all_lines = []
-    last_embed_content = ""
 
     # If no status_msg was passed, send an initial embed
     if status_msg is None:
@@ -219,12 +371,27 @@ async def monitor_progress(channel, thread, task_name, status_msg=None):
         for line in new_lines:
             if line.startswith("==="):
                 continue  # Skip session headers
-            # Strip the protocol prefix, keep the human-readable part
+            if line.startswith("TASK:"):
+                # Update thread name with the real task description
+                new_name = line.replace("TASK:", "").strip()
+                try:
+                    await thread.edit(name=f"Bobby: {new_name[:80]}")
+                except Exception:
+                    pass
+                continue
+            # Format for thread display
             display = line
-            for prefix in ("PROGRESS:", "COMPLETE:", "QUESTION:", "ERROR:"):
-                if line.startswith(prefix):
-                    display = line[len(prefix):].strip()
-                    break
+            if line.startswith("QUESTION:"):
+                msg = line.replace("QUESTION:", "").strip()
+                display = f"**Question:** {msg}"
+            else:
+                for prefix in ("PROGRESS:", "COMPLETE:", "ERROR:"):
+                    if line.startswith(prefix):
+                        display = line[len(prefix):].strip()
+                        break
+            # Normalize ASCII arrow
+            if display.startswith("-> "):
+                display = "→ " + display[3:]
             try:
                 await thread.send(f"> {display}")
             except Exception as e:
@@ -237,29 +404,48 @@ async def monitor_progress(channel, thread, task_name, status_msg=None):
                 status = "complete"
             elif line.startswith("QUESTION:"):
                 status = "question"
+                _agent_asked_question = True
+                # Speak the question in voice — fire-and-forget so the embed
+                # updates immediately instead of waiting 30s for TTS playback
+                question_text = line.replace("QUESTION:", "").strip()
+                asyncio.create_task(
+                    _speak_in_voice(f"{VOICE_ANNOUNCE_QUESTION} {question_text}")
+                )
             elif line.startswith("ERROR:"):
                 status = "error"
 
-        # Update embed only if content changed
+        # Update embed (always — title may change from TASK: even if description doesn't)
         embed = build_progress_embed(task_name, all_lines, status)
-        current_content = embed.description
-        if current_content != last_embed_content:
-            try:
-                await status_msg.edit(embed=embed)
-                last_embed_content = current_content
-            except Exception as e:
-                print(f"Error updating embed: {e}")
+        try:
+            await status_msg.edit(embed=embed)
+        except Exception as e:
+            print(f"Error updating embed: {e}")
 
         if status in ("complete", "error"):
             break
 
-    # Final update after agent finishes
+    # Read any remaining lines the monitor missed (agent may have exited
+    # between poll cycles, writing lines we never saw)
+    final_lines, _ = read_latest_progress(last_position)
+    if final_lines:
+        all_lines.extend(final_lines)
+        for line in final_lines:
+            if line.startswith("TASK:"):
+                new_name = line.replace("TASK:", "").strip()
+                try:
+                    await thread.edit(name=f"Bobby: {new_name[:80]}")
+                except Exception:
+                    pass
+
+    # Final embed update
     if all_lines:
         status = "complete"
         for line in all_lines:
             if line.startswith("ERROR:"):
                 status = "error"
                 break
+            elif line.startswith("QUESTION:"):
+                status = "question"
         embed = build_progress_embed(task_name, all_lines, status)
         try:
             await status_msg.edit(embed=embed)
@@ -275,6 +461,40 @@ async def monitor_progress(channel, thread, task_name, status_msg=None):
 
 # --- Agent Execution ---
 
+def _extract_task_name(context):
+    """
+    Extract a human-readable task name from transcript context.
+
+    Grabs the last substantive line before the trigger phrase.
+    Zero latency — just string processing, no AI call.
+    """
+    lines = context.strip().split('\n')
+    for line in reversed(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith('==='):
+            continue
+        # Skip lines that contain a trigger phrase (uses the same
+        # normalization as detect_trigger — handles commas, punctuation, etc.)
+        if detect_trigger(stripped) is not None:
+            continue
+
+        # Strip [HH:MM:SS] timestamp prefix
+        text = stripped
+        if text.startswith('[') and '] ' in text:
+            text = text[text.index('] ') + 2:]
+        # Strip [Speaker] prefix
+        if text.startswith('[') and '] ' in text:
+            text = text[text.index('] ') + 2:]
+
+        text = text.strip()
+        if text:
+            return text[:100]
+
+    return "Voice-triggered task"
+
+
 async def run_agent(channel, task_name, context):
     """
     Launch the Claude Code agent and monitor its progress.
@@ -282,27 +502,34 @@ async def run_agent(channel, task_name, context):
     Runs the blocking agent subprocess in a background thread via asyncio.to_thread,
     while the progress monitor runs as a concurrent async task.
     """
-    global _agent_running, _agent_task
+    global _agent_running, _agent_task, _agent_asked_question
 
     _agent_running = True
+    _agent_asked_question = False
 
     # Send initial embed and create a thread off it for detailed logs
     embed = build_progress_embed(task_name, [], "in_progress")
     try:
-        status_msg = await channel.send(embed=embed)
-        thread = await status_msg.create_thread(
-            name=f"Bobby: {task_name[:80]}",
-            auto_archive_duration=60,
-        )
+        if channel:
+            status_msg = await channel.send(embed=embed)
+            thread = await status_msg.create_thread(
+                name=f"Bobby: {task_name[:80]}",
+                auto_archive_duration=60,
+            )
+        else:
+            status_msg = None
+            thread = None
     except Exception as e:
         print(f"Error creating thread: {e}")
         status_msg = None
-        thread = channel
+        thread = None
 
-    # Start progress monitor as async task
-    monitor_task = asyncio.create_task(
-        monitor_progress(channel, thread, task_name, status_msg=status_msg)
-    )
+    # Start progress monitor as async task (only if we have a channel)
+    monitor_task = None
+    if channel and thread:
+        monitor_task = asyncio.create_task(
+            monitor_progress(channel, thread, task_name, status_msg=status_msg)
+        )
 
     # Run the blocking agent in a background thread
     try:
@@ -311,27 +538,105 @@ async def run_agent(channel, task_name, context):
         )
         print(f"Agent finished with return code: {return_code}")
 
-        # Announce completion in voice
-        if return_code == 0:
-            await _speak_in_voice("Done. The task is complete.")
+        # Check if agent stopped because it asked a question.
+        # The agent exits with code 0 after writing QUESTION:, but that's
+        # not a completion — it's waiting for an answer.
+        stopped_for_question = False
+        if PROGRESS_FILE.exists():
+            try:
+                plines = PROGRESS_FILE.read_text().strip().split('\n')
+                last_meaningful = next(
+                    (l for l in reversed(plines) if l.strip() and not l.startswith('===')),
+                    ''
+                )
+                if last_meaningful.strip().startswith('QUESTION:'):
+                    stopped_for_question = True
+                    _agent_asked_question = True
+            except Exception:
+                pass
+
+        # Announce result in voice (skip if agent asked a question — either
+        # it stopped at QUESTION: or it continued past it)
+        if stopped_for_question or _agent_asked_question:
+            print("Agent asked a question — skipping completion announcement")
+        elif return_code == 0:
+            await _speak_in_voice(VOICE_ANNOUNCE_COMPLETION)
         else:
-            await _speak_in_voice("Something went wrong. Check the progress for details.")
+            await _speak_in_voice(VOICE_ANNOUNCE_ERROR)
 
     except Exception as e:
         print(f"Agent error: {e}")
-        try:
-            await channel.send(f"Agent error: {e}")
-        except Exception:
-            pass
+        if channel:
+            try:
+                await channel.send(f"Agent error: {e}")
+            except Exception:
+                pass
     finally:
         _agent_running = False
         _agent_task = None
 
     # Wait for monitor to finish its final update
+    if monitor_task:
+        try:
+            await asyncio.wait_for(monitor_task, timeout=10)
+        except asyncio.TimeoutError:
+            monitor_task.cancel()
+
+
+async def run_resume_agent(channel, answer):
+    """
+    Resume the Claude Code agent with an answer and monitor progress.
+    """
+    global _agent_running, _agent_task, _agent_asked_question
+
+    _agent_running = True
+    _agent_asked_question = False
+
+    task_name = "Resuming with answer"
+
+    # Send embed + thread for resume progress (only if we have a channel)
+    monitor_task = None
+    if channel:
+        embed = build_progress_embed(task_name, [], "in_progress")
+        try:
+            status_msg = await channel.send(embed=embed)
+            thread = await status_msg.create_thread(
+                name="Bobby: resume",
+                auto_archive_duration=60,
+            )
+            monitor_task = asyncio.create_task(
+                monitor_progress(channel, thread, task_name, status_msg=status_msg)
+            )
+        except Exception as e:
+            print(f"Error creating resume thread: {e}")
+
     try:
-        await asyncio.wait_for(monitor_task, timeout=10)
-    except asyncio.TimeoutError:
-        monitor_task.cancel()
+        return_code = await asyncio.to_thread(
+            resume_agent, answer, WORKSPACE_DIR
+        )
+        print(f"Agent resume finished with return code: {return_code}")
+
+        if return_code == 0:
+            await _speak_in_voice(VOICE_ANNOUNCE_RESUME_COMPLETE)
+        else:
+            await _speak_in_voice(VOICE_ANNOUNCE_ERROR)
+
+    except Exception as e:
+        print(f"Agent resume error: {e}")
+        if channel:
+            try:
+                await channel.send(f"Agent resume error: {e}")
+            except Exception:
+                pass
+    finally:
+        _agent_running = False
+        _agent_task = None
+
+    if monitor_task:
+        try:
+            await asyncio.wait_for(monitor_task, timeout=10)
+        except asyncio.TimeoutError:
+            monitor_task.cancel()
 
 
 # --- Slash Commands ---
@@ -396,7 +701,7 @@ async def _speak_in_voice(text):
             break
 
     if vc is None:
-        print(f"Bobby says (no voice channel): {text}")
+        print(f"[VOICE skip] Not in voice channel. Text: {text[:80]}")
         return
 
     temp_file = "/tmp/bobby_discord_speech.mp3"
@@ -404,11 +709,12 @@ async def _speak_in_voice(text):
     try:
         from bobby.tts import generate_audio
 
-        print(f"Bobby speaking in voice (ElevenLabs): {text}")
+        print(f"[VOICE] Generating ElevenLabs audio ({len(text)} chars)...")
         audio_bytes = await asyncio.to_thread(generate_audio, text)
 
         with open(temp_file, "wb") as f:
             f.write(audio_bytes)
+        print(f"[VOICE] ElevenLabs audio ready ({len(audio_bytes)} bytes)")
 
     except Exception as e:
         # Extract just the useful error message, not the full HTTP headers
@@ -417,7 +723,7 @@ async def _speak_in_voice(text):
             detail = e.body.get('detail', {})
             if isinstance(detail, dict):
                 error_msg = detail.get('message', error_msg)
-        print(f"ElevenLabs failed: {error_msg} — falling back to macOS say")
+        print(f"[VOICE] ElevenLabs failed: {error_msg} — falling back to macOS say")
         # macOS 'say' can output to AIFF file, which FFmpeg can decode
         temp_file = "/tmp/bobby_discord_speech.aiff"
         try:
@@ -426,26 +732,29 @@ async def _speak_in_voice(text):
                 subprocess.run,
                 ["say", "-o", temp_file, text],
                 check=True,
-                timeout=10,
+                timeout=30,
             )
+            print(f"[VOICE] macOS say audio ready")
         except Exception as fallback_error:
-            print(f"Fallback TTS also failed: {fallback_error}")
+            print(f"[VOICE FAILED] macOS say also failed: {fallback_error}")
             return
 
     try:
         if vc.is_playing():
+            print("[VOICE] Stopping current playback")
             vc.stop()
 
         source = discord.FFmpegPCMAudio(temp_file)
         vc.play(source)
+        print(f"[VOICE] Playing in Discord...")
 
         while vc.is_playing():
             await asyncio.sleep(0.5)
 
-        print("Bobby finished speaking")
+        print("[VOICE] Playback complete")
 
     except Exception as e:
-        print(f"Voice playback error: {e}")
+        print(f"[VOICE FAILED] Playback error: {e}")
 
 
 # --- Voice Commands ---
@@ -464,9 +773,7 @@ async def _watch_transcript_for_triggers(text_channel):
     the shared detect_trigger() function. Manages debounce state and
     file position locally.
     """
-    global _agent_running, _agent_task
-
-    import time
+    global _agent_running, _agent_task, _agent_asked_question
 
     # Start reading from end of file
     if TRANSCRIPT_FILE.exists():
@@ -478,11 +785,22 @@ async def _watch_transcript_for_triggers(text_channel):
 
     last_launch_time = 0
     DEBOUNCE_SECONDS = 10
+    disconnect_count = 0  # Tolerate brief disconnects (Pycord auto-reconnects)
 
     print("Transcript watcher started — listening for voice triggers")
 
     while True:
         await asyncio.sleep(2)
+
+        # Stop if bot is no longer in a voice channel — but tolerate brief
+        # disconnects (Pycord reconnects automatically, ~1-2 seconds)
+        if not bot.voice_clients or not any(vc.is_connected() for vc in bot.voice_clients):
+            disconnect_count += 1
+            if disconnect_count >= 5:  # 10 seconds of no connection
+                print("Transcript watcher stopping — bot disconnected for too long")
+                break
+            continue
+        disconnect_count = 0
 
         if not TRANSCRIPT_FILE.exists():
             continue
@@ -516,21 +834,38 @@ async def _watch_transcript_for_triggers(text_channel):
 
             if _agent_running:
                 print("Voice trigger detected but agent already running")
-                await _speak_in_voice("I'm already working on something. Hold on.")
+                await _speak_in_voice(VOICE_AGENT_BUSY)
                 continue
 
             print("Voice trigger detected: launching agent")
-            await _speak_in_voice("On it. Let me work on that.")
+            await _speak_in_voice(VOICE_ACKNOWLEDGE_LAUNCH)
             context = get_recent_context(TRANSCRIPT_FILE, lines=15)
-            task_name = "Voice-triggered task"
+            task_name = _extract_task_name(context)
 
             _agent_task = asyncio.create_task(
                 run_agent(text_channel, task_name, context)
             )
 
         elif trigger == "resume":
-            # Phase 4 will implement resume via voice
-            print("Resume trigger detected (not yet implemented in Discord mode)")
+            if _agent_running:
+                print("Resume trigger detected but agent is still running")
+                continue
+
+            if not _agent_asked_question:
+                print("Resume trigger detected but agent didn't ask a question — ignoring")
+                continue
+
+            print("Voice trigger detected: resuming agent with answer")
+            await _speak_in_voice(VOICE_ACKNOWLEDGE_RESUME)
+
+            # Get recent transcript to extract the answer
+            recent = get_recent_context(TRANSCRIPT_FILE, lines=10)
+            answer = extract_answer(recent)
+            print(f"Extracted answer: {answer}")
+
+            _agent_task = asyncio.create_task(
+                run_resume_agent(text_channel, answer)
+            )
 
 
 @bobby_cmds.command(description="Join your voice channel and start listening")
@@ -570,7 +905,6 @@ async def join(ctx: discord.ApplicationContext):
         vc.start_recording(_voice_sink, _recording_finished_callback, ctx.channel)
 
         # Write session header to transcript
-        from datetime import datetime
         timestamp = datetime.now().strftime("%H:%M:%S")
         with open(TRANSCRIPT_FILE, "a") as f:
             f.write(f"\n[{timestamp}] === Bobby joined Discord voice: {voice_channel.name} ===\n\n")
@@ -592,8 +926,6 @@ async def join(ctx: discord.ApplicationContext):
 @bobby_cmds.command(description="Leave the voice channel and stop listening")
 async def leave(ctx: discord.ApplicationContext):
     """Leave the voice channel and stop transcribing."""
-    global _voice_sink, _transcript_watcher_task
-
     if not ctx.voice_client or not ctx.voice_client.is_connected():
         await ctx.respond("I'm not in a voice channel.", ephemeral=True)
         return
@@ -601,31 +933,7 @@ async def leave(ctx: discord.ApplicationContext):
     await ctx.respond("Leaving voice channel...", ephemeral=True)
 
     try:
-        # Stop the transcript watcher
-        if _transcript_watcher_task:
-            _transcript_watcher_task.cancel()
-            _transcript_watcher_task = None
-
-        # Stop recording (triggers cleanup on the sink)
-        if ctx.voice_client.recording:
-            ctx.voice_client.stop_recording()
-
-        # Stop transcription explicitly (in case cleanup didn't run)
-        if _voice_sink:
-            _voice_sink.stop_transcription()
-            _voice_sink = None
-
-        # Disconnect from voice
-        await ctx.voice_client.disconnect()
-
-        # Write session footer to transcript
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        with open(TRANSCRIPT_FILE, "a") as f:
-            f.write(f"\n[{timestamp}] === Bobby left Discord voice ===\n\n")
-
-        print("Left voice channel, transcription stopped")
-
+        await _cleanup_voice(ctx.voice_client)
     except Exception as e:
         print(f"Error leaving voice channel: {e}")
         await ctx.followup.send(f"Error: {e}", ephemeral=True)
@@ -653,7 +961,16 @@ def run_bot():
     if guild_ids:
         bobby_cmds.guild_ids = guild_ids
 
-    bot.run(token)
+    try:
+        bot.run(token)
+    finally:
+        # Synchronous cleanup after bot.run() returns (Ctrl+C or error).
+        # Voice client is already disconnected by Pycord's shutdown.
+        # We just need to stop Assembly AI threads.
+        if _voice_sink:
+            print("Stopping Assembly AI sessions...")
+            _voice_sink.stop_transcription()
+        print("Bobby shutdown complete.")
 
 
 if __name__ == "__main__":

@@ -8,22 +8,55 @@ The novel part: not just transcription or note-taking, but actual code execution
 
 ## Current State
 
-**What works:**
-- Real-time audio capture via microphone or BlackHole virtual audio device
-- Live transcription via Assembly AI streaming v3
-- Trigger detection ("Hey Bobby, please build this") with 30s debounce
+**Two operating modes:**
+- **Discord mode** (primary) — Bobby joins a Discord voice channel as a bot participant. Per-speaker transcription, progress embeds in text channels, voice output into the call. Full question/answer/resume loop.
+- **Local mode** — Captures audio from mic (or BlackHole virtual audio device). Rich terminal UI with macOS notifications. Useful for testing without Discord.
+
+**What works in both modes:**
+- Real-time transcription via Assembly AI streaming v3
+- Trigger detection ("Hey Bobby, please build this") with debounce
 - Claude Code agent launch with meeting context
-- Agent progress monitoring with Rich terminal UI + macOS notifications
-- Text-to-speech via ElevenLabs (Eastern European accent voice)
-- Transcription auto-pauses while Bobby speaks (prevents self-capture)
-- tmux-based multi-pane launcher
+- Resume trigger ("Thank you, Bobby") to answer agent questions
+- Text-to-speech via ElevenLabs (Eastern European Borat-style voice) with macOS `say` fallback
+
+**Discord-specific features:**
+- Per-speaker audio routing (each user gets their own Assembly AI session)
+- Auto-join/leave voice channel via `DISCORD_VOICE_CHANNEL_ID`
+- Progress embeds with dynamic task names, bold question labels, thread detail logs
+- Voice output into Discord (ElevenLabs → FFmpegPCMAudio)
 
 **What's not done:**
-- BlackHole aggregate device for capturing Zoom/Meet audio (currently uses default mic)
-- Discord integration (Bobby as a real meeting participant)
-- Progress updates in chat (currently uses macOS notifications)
+- BlackHole aggregate device for capturing Zoom/Meet audio in local mode
+- Multi-meeting support (parallel projects in different channels)
+- Proactive suggestions (Bobby offers to build things without explicit triggers)
 
 ## Architecture
+
+### Discord Mode
+
+Single process. Pycord asyncio event loop + background threads for Assembly AI and agent subprocess.
+
+```
+Discord Voice Channel
+       |
+  [discord_bot.py]  ──→  [discord_sink.py]  ──→  Assembly AI (per-user)
+       |                                              |
+       |                                    meeting_transcript.txt
+       |                                              |
+       |                                    [trigger detection]
+       |                                      (agent_runner.py)
+       |                                              |
+       |                                    Claude Code Agent
+       |                                              |
+       |                                    agent_progress.txt
+       |                                              |
+  [discord_bot.py]  ←── reads progress ←──────────────┘
+       |
+  Text channel: embeds + threads
+  Voice channel: ElevenLabs TTS playback
+```
+
+### Local Mode
 
 Four components run as parallel processes, communicating through files:
 
@@ -40,32 +73,11 @@ Microphone/BlackHole
                         Bobby speaks      Rich UI + notifications
 ```
 
-| Component | Module | Purpose |
-|-----------|--------|---------|
-| Audio Capture | `bobby.audio_capture` | Streams mic audio to Assembly AI, writes transcript |
-| Orchestrator | `bobby.orchestrator` | Watches transcript for triggers, launches/resumes agents |
-| Progress Watcher | `bobby.progress_watcher` | Watches agent output, displays Rich UI + notifications |
-| TTS | `bobby.tts` | ElevenLabs text-to-speech with macOS fallback |
+### Key Design Decisions
 
-## Project Structure
-
-```
-bobby/
-├── bobby/                  # Python package
-│   ├── config.py           # Centralized paths (BOBBY_WORKSPACE env var)
-│   ├── audio_capture.py    # Component 1: mic → Assembly AI → transcript
-│   ├── orchestrator.py     # Component 2: trigger detection, agent management
-│   ├── progress_watcher.py # Component 3: Rich UI + macOS notifications
-│   └── tts.py              # Component 4: ElevenLabs TTS
-├── sandbox/                # Test workspace (FlowTask React/Vite landing page)
-├── tests/                  # Test and demo scripts
-├── docs/                   # Documentation + archive of build history
-├── start_bobby.sh          # tmux launcher (3 panes)
-├── start_bobby.py          # Python launcher (single terminal, colored output)
-├── stop_bobby.sh           # Kill tmux session
-├── pyproject.toml          # Dependencies (managed with uv)
-└── .env                    # API keys (gitignored)
-```
+- **File-based IPC** — `meeting_transcript.txt` and `agent_progress.txt` are the interface between components. Both modes produce/consume these files. This keeps the modes decoupled and makes debugging easy (just read the file).
+- **Per-user Assembly AI sessions** — In Discord mode, each speaking user gets their own AAI streaming session via `discord_sink.py`. This gives speaker-labeled transcripts (`[Max] said X`) so the agent understands who wants what. Dead sessions are auto-cleaned from the dict so the next audio chunk creates a fresh one.
+- **Threading model** — Pycord runs on asyncio. Assembly AI's `client.stream()` is blocking, so it runs in background threads (one per user). Agent subprocess runs via `asyncio.to_thread()`. File reads for polling are fast enough for the event loop.
 
 ## Key Conventions
 
@@ -74,85 +86,65 @@ bobby/
 All file paths are centralized in `bobby/config.py`. Bobby defaults to operating on `./sandbox` but can target any workspace:
 
 ```bash
-# Default: operates on the sandbox test app
-./start_bobby.sh
-
-# Point at a different project
 BOBBY_WORKSPACE=~/Projects/my-app ./start_bobby.sh
 ```
 
-The config exports: `WORKSPACE_DIR`, `TRANSCRIPT_FILE`, `PROGRESS_FILE`, `PAUSE_FLAG_FILE`, `BOBBY_SPEECH_FILE`. All modules import paths from config rather than hardcoding them.
+All modules import paths from config rather than hardcoding them.
 
 ### Running Bobby
 
 ```bash
-# Install dependencies
-uv sync
-
-# Set up API keys
+# --- Discord Mode ---
+uv sync --extra discord
 cp .env.example .env
-# Edit .env with your ASSEMBLYAI_API_KEY and ELEVENLABS_API_KEY
+# Edit .env: ASSEMBLYAI_API_KEY, ELEVENLABS_API_KEY, DISCORD_BOT_TOKEN,
+# DISCORD_GUILD_ID, DISCORD_CHANNEL_ID, DISCORD_VOICE_CHANNEL_ID
+uv run python start_discord.py
 
-# Launch all components in tmux
+# --- Local Mode ---
+uv sync
 ./start_bobby.sh
-
-# Or launch in a single terminal with colored output
-uv run python start_bobby.py
-
-# Voice test mode (no agent execution, saves API credits)
-./start_bobby.sh --test-voice
+# Or: ./start_bobby.sh --test-voice (no agent execution)
 ```
+
+Discord mode requires: `brew install ffmpeg opus`
 
 ### Triggers
 
 - **"Hey Bobby, please build this"** — Launches a new Claude Code agent with recent meeting context
 - **"Thank you, Bobby"** — Resumes an agent that asked a question
 
-### Agent communication
+### Agent protocol
 
-The orchestrator launches `claude -p --dangerously-skip-permissions` with a system prompt that instructs the agent to write progress to `agent_progress.txt` in this format:
+The agent writes progress to `agent_progress.txt`:
 
 ```
-PROGRESS: -> Starting task
+TASK: Short description of what's being built
+PROGRESS: → Starting task
 PROGRESS:   ✓ Completed step
 QUESTION: Your question here
 COMPLETE: Summary at http://localhost:5173
 ```
 
-The progress watcher reads this file and displays updates in real-time.
+TASK: is the agent's first write — it updates the embed title and thread name in Discord mode. The prompt template lives in `bobby/prompts.py`.
 
-## Dependencies
+## Commit Messages
 
-- `assemblyai` — Real-time speech-to-text streaming
-- `pyaudio` — Audio device access (requires PortAudio: `brew install portaudio`)
-- `elevenlabs` — Text-to-speech API
-- `rich` — Terminal UI for progress watcher
-- `python-dotenv` — Environment variable loading
+Look at `git log` to match the style of existing commits. The key principle: write for someone reading the log in 3 months who needs to understand what changed and why.
 
-External tools:
-- `claude` CLI — Claude Code for agent execution
-- `terminal-notifier` — macOS notifications (`brew install terminal-notifier`)
-- `tmux` — Multi-pane terminal management
-- BlackHole — Virtual audio device for capturing meeting audio (`brew install blackhole-2ch`)
+**Include:** features, architectural decisions, new/changed files with what they do, what was tested.
 
-Discord mode additionally requires:
-- `ffmpeg` — Audio encoding/decoding for Pycord voice (`brew install ffmpeg`)
-- `opus` — Audio codec for Discord voice receive (`brew install opus`)
-- Install Python deps: `uv sync --extra discord`
+**Omit:** implementation micro-fixes (logger levels, timeout tweaks, arrow character changes), anything that's just "how" rather than "what" or "why". If a detail only matters while actively debugging that code, it belongs in a code comment, not the commit message.
 
-## Roadmap
-
-The current setup is a local testing rig (mic → transcript → agent → notifications). The next phase is making Bobby a real meeting participant:
-
-1. **Discord integration** — Bobby joins voice channels, captures audio, sends progress updates in chat
-2. **Multi-meeting support** — Bobby can operate on different projects in parallel
-3. **Proactive suggestions** — Bobby offers to build things mentioned in discussion without explicit triggers
+The right granularity depends on the change. A single-purpose bug fix needs one sentence. A multi-faceted phase like this project's Discord integration needs structured sections (summary, new files, changes, tested). But even in long messages, each file's entry should capture the intent — not enumerate every fix.
 
 ## For Agents Working on This Codebase
 
 - All file paths come from `bobby/config.py` — never hardcode workspace paths
-- Bobby's voice uses ElevenLabs with voice ID `lIaJUjvN2nyLPU9wRIa0` (Eastern European accent)
-- Audio capture currently defaults to `USE_DEFAULT_MIC = True` in `audio_capture.py` — set to `False` for BlackHole/production
-- The orchestrator starts reading from the END of the transcript file to avoid replaying old triggers
+- `bobby/prompts.py` is the single source of truth for Bobby's personality (Borat-style Eastern European accent), all voice lines, and the agent prompt template. Don't hardcode voice strings elsewhere.
+- Bobby's voice uses ElevenLabs with voice ID `lIaJUjvN2nyLPU9wRIa0` (requires paid plan; macOS `say` is the fallback)
+- Audio capture in local mode defaults to `USE_DEFAULT_MIC = True` in `audio_capture.py` — set to `False` for BlackHole/production
 - TTS uses `subprocess.run()` for audio playback — never use `os.system()` (shell injection risk)
-- **Plan files** are stored in `~/.claude/plans/`, NOT in the project's `.claude/plans/` directory. After compaction, if a plan file reference appears missing from the project directory, check `~/.claude/plans/` — that's where Claude Code stores them
+- The orchestrator and transcript watcher start reading from the END of the transcript file to avoid replaying old triggers
+- **Critical async pattern:** Question voice in Discord mode MUST fire as `asyncio.create_task()` (not `await`) in monitor_progress, otherwise it blocks the embed update loop for 30s during TTS playback and the agent exits before the embed shows the question
+- **Plan files** are stored in `~/.claude/plans/`, NOT in the project's `.claude/plans/` directory

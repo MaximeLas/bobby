@@ -266,6 +266,13 @@ class AssemblyAISink(Sink):
                     stream.client.disconnect(terminate=True)
                 except Exception:
                     pass
+
+            # Remove from _user_streams so next audio chunk creates a fresh session.
+            # Without this, a dead session stays in the dict and all audio from
+            # this user silently goes nowhere until Bobby leaves and rejoins.
+            with self._lock:
+                self._user_streams.pop(stream.user_id, None)
+
             logger.info(f"[{stream.display_name}] Assembly AI thread exiting")
 
     def _write_transcript(self, text: str, display_name: str):
@@ -278,7 +285,8 @@ class AssemblyAISink(Sink):
         try:
             with open(TRANSCRIPT_FILE, "a") as f:
                 f.write(line)
-            logger.info(f"TRANSCRIPT: {line.strip()}")
+            # Log without the timestamp (the logger already provides one)
+            logger.info(f"TRANSCRIPT: [{display_name}] {text}")
         except Exception as e:
             logger.error(f"Error writing transcript: {e}")
 
