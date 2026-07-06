@@ -4,8 +4,8 @@ version = "0.1.0"
 description = "AI meeting assistant that executes code tasks in real-time"
 requires-python = ">=3.12"
 dependencies = [
-    "assemblyai>=0.52.4",
-    "elevenlabs>=2.37.0",
+    "assemblyai>=0.64.21",
+    "elevenlabs>=2.54.0",
     "pyaudio>=0.2.14",
     "python-dotenv>=1.2.1",
     "rich>=14.3.3",
@@ -13,7 +13,7 @@ dependencies = [
 
 [project.optional-dependencies]
 discord = [
-    "py-cord[voice]>=2.6.0",
+    "py-cord[voice]>=2.8.0",
 ]
 
 [build-system]
