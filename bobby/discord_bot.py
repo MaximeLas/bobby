@@ -46,6 +46,7 @@ from bobby.config import (
 from bobby.agent_runner import (
     launch_agent,
     resume_agent,
+    stop_agent,
     get_recent_context,
     detect_trigger,
     extract_answer,
@@ -89,6 +90,7 @@ bobby_cmds = bot.create_group("bobby", "Bobby AI meeting assistant")
 _agent_running = False
 _agent_task = None  # asyncio.Task for the running agent
 _agent_asked_question = False  # True when agent wrote a QUESTION: line
+_agent_stopped_by_user = False  # True when /bobby stop killed the agent (suppresses error announcement)
 
 # Voice state
 _voice_sink = None  # AssemblyAISink instance (active during voice recording)
@@ -502,10 +504,11 @@ async def run_agent(channel, task_name, context):
     Runs the blocking agent subprocess in a background thread via asyncio.to_thread,
     while the progress monitor runs as a concurrent async task.
     """
-    global _agent_running, _agent_task, _agent_asked_question
+    global _agent_running, _agent_task, _agent_asked_question, _agent_stopped_by_user
 
     _agent_running = True
     _agent_asked_question = False
+    _agent_stopped_by_user = False
 
     # Send initial embed and create a thread off it for detailed logs
     embed = build_progress_embed(task_name, [], "in_progress")
@@ -557,7 +560,9 @@ async def run_agent(channel, task_name, context):
 
         # Announce result in voice (skip if agent asked a question — either
         # it stopped at QUESTION: or it continued past it)
-        if stopped_for_question or _agent_asked_question:
+        if _agent_stopped_by_user:
+            print("Agent stopped by user — skipping announcement")
+        elif stopped_for_question or _agent_asked_question:
             print("Agent asked a question — skipping completion announcement")
         elif return_code == 0:
             await _speak_in_voice(VOICE_ANNOUNCE_COMPLETION)
@@ -587,10 +592,11 @@ async def run_resume_agent(channel, answer):
     """
     Resume the Claude Code agent with an answer and monitor progress.
     """
-    global _agent_running, _agent_task, _agent_asked_question
+    global _agent_running, _agent_task, _agent_asked_question, _agent_stopped_by_user
 
     _agent_running = True
     _agent_asked_question = False
+    _agent_stopped_by_user = False
 
     task_name = "Resuming with answer"
 
@@ -616,7 +622,9 @@ async def run_resume_agent(channel, answer):
         )
         print(f"Agent resume finished with return code: {return_code}")
 
-        if return_code == 0:
+        if _agent_stopped_by_user:
+            print("Agent stopped by user — skipping announcement")
+        elif return_code == 0:
             await _speak_in_voice(VOICE_ANNOUNCE_RESUME_COMPLETE)
         else:
             await _speak_in_voice(VOICE_ANNOUNCE_ERROR)
@@ -662,6 +670,70 @@ async def build(
     _agent_task = asyncio.create_task(
         run_agent(ctx.channel, task, context)
     )
+
+
+@bobby_cmds.command(description="Answer Bobby's question and resume the agent")
+async def resume(
+    ctx: discord.ApplicationContext,
+    answer: discord.Option(str, "Your answer to Bobby's question", required=True),
+):
+    """
+    Manually resume the agent with a typed answer.
+
+    Demo safety net for the voice resume trigger: if "Thank you, Bobby" is
+    misheard or the answer is extracted badly from the transcript, this gives
+    an exact, typed answer instead. Unlike the voice path it also works when
+    no QUESTION: line was detected (forced resume of the last agent session).
+    """
+    global _agent_task
+
+    if _agent_running:
+        await ctx.respond("Bobby is still working — wait for the question or use `/bobby stop` first.")
+        return
+
+    note = "" if _agent_asked_question else "\n-# No outstanding question — resuming the last agent session anyway."
+    await ctx.respond(f"Resuming with answer: **{answer}**{note}", ephemeral=True)
+
+    _agent_task = asyncio.create_task(
+        run_resume_agent(ctx.channel, answer)
+    )
+
+
+@bobby_cmds.command(description="Stop the currently running agent")
+async def stop(ctx: discord.ApplicationContext):
+    """
+    Kill the running agent subprocess.
+
+    Demo safety net for a runaway or mis-triggered build: terminates the
+    `claude` process; run_agent's normal cleanup then resets state. The
+    _agent_stopped_by_user flag suppresses the error voice announcement.
+    """
+    global _agent_stopped_by_user
+
+    if not _agent_running:
+        await ctx.respond("Bobby is idle — nothing to stop.")
+        return
+
+    _agent_stopped_by_user = True
+    stopped = await asyncio.to_thread(stop_agent)
+    if not stopped and _agent_running:
+        # Startup window: run_agent sets _agent_running before launch_agent
+        # spawns the subprocess, so a very fast /stop can find no process yet.
+        # Wait a beat and try once more.
+        await asyncio.sleep(1)
+        stopped = await asyncio.to_thread(stop_agent)
+
+    if stopped:
+        await ctx.respond("🛑 Stopped the running agent.")
+    elif _agent_running:
+        _agent_stopped_by_user = False
+        await ctx.respond("Couldn't stop it — the agent is still starting up. Try `/bobby stop` again.")
+    else:
+        # The agent finished naturally just as stop was pressed. Leave the
+        # flag set so the now-moot announcement stays suppressed (resetting it
+        # here races run_agent's announcement check — it reads the flag after
+        # this coroutine resumes). run_agent resets the flag on the next run.
+        await ctx.respond("The agent finished just as you pressed stop.")
 
 
 @bobby_cmds.command(description="Check Bobby's current status")
