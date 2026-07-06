@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
 Bobby Audio Capture - Component 1
-Captures audio from BlackHole virtual audio device and streams to Assembly AI
-for real-time transcription with speaker labels.
+Captures audio from BlackHole virtual audio device (or the default mic) and
+streams it to Assembly AI for real-time transcription.
 
-Writes transcripts to meeting_transcript.txt in the format:
-[HH:MM:SS] Speaker A: transcript text
+Single-channel capture, so all speakers share one unlabeled transcript. Writes
+to meeting_transcript.txt in the format:
+[HH:MM:SS] transcript text
 """
 
 import os
@@ -16,7 +17,15 @@ from datetime import datetime
 
 import pyaudio
 from dotenv import load_dotenv
-from bobby.config import TRANSCRIPT_FILE, PAUSE_FLAG_FILE, BOBBY_SPEECH_FILE
+from bobby.config import (
+    TRANSCRIPT_FILE,
+    PAUSE_FLAG_FILE,
+    BOBBY_SPEECH_FILE,
+    STREAMING_SPEECH_MODEL,
+    STREAMING_PROMPT,
+    STREAMING_KEYTERMS,
+)
+from bobby.streaming import should_write_turn
 from assemblyai.streaming.v3 import (
     BeginEvent,
     StreamingClient,
@@ -37,6 +46,10 @@ logger = logging.getLogger(__name__)
 
 # Global variable for cleanup
 client = None
+
+# Tracks turn_order values already written this session, so each finalized turn
+# is written exactly once regardless of how the model emits it (see on_turn).
+_written_turn_orders = set()
 
 
 class BlackHoleAudioStream:
@@ -130,7 +143,7 @@ def get_timestamp():
 
 
 def write_transcript(text):
-    """Write transcript line to file with timestamp (no speaker labels in streaming v3)"""
+    """Write transcript line to file with timestamp (single-channel: no speaker labels)"""
     # Check if transcription is paused (Bobby is speaking)
     pause_flag = PAUSE_FLAG_FILE
     if pause_flag.exists():
@@ -168,6 +181,8 @@ def write_transcript(text):
 
 def on_begin(self, event: BeginEvent):
     """Called when streaming session starts"""
+    global _written_turn_orders
+    _written_turn_orders = set()  # fresh session => turn_order restarts
     logger.info(f"Streaming session started: {event.id}")
     logger.info("Listening for audio... (Press Ctrl+C to stop)")
 
@@ -176,30 +191,13 @@ def on_turn(self, event: TurnEvent):
     """
     Called for each transcription turn.
 
-    IMPORTANT: Assembly AI sends multiple types of transcripts:
-    - Partial transcripts (end_of_turn=False): Progressive updates as audio streams
-      Example: "hey" → "hey bob" → "hey bob please"
-    - Final unformatted (end_of_turn=True, turn_is_formatted=False): Raw text
-      Example: "hey bobby please build this"
-    - Final formatted (end_of_turn=True, turn_is_formatted=True): Capitalized/punctuated
-      Example: "Hey, Bobby, please build this."
-
-    We only write FORMATTED final transcripts to avoid duplicates.
-    Updates arrive every 2-5 seconds as people pause naturally - still real-time!
+    Finalized-turn gating and dedupe live in streaming.should_write_turn
+    (shared with Discord mode — keep the two modes identical).
     """
-    # Only process complete utterances (final transcripts), skip partial updates
-    if not event.end_of_turn:
-        return  # Skip partial/interim transcripts
-
-    # Only write FORMATTED transcripts (skip unformatted duplicates)
-    if not event.turn_is_formatted:
-        return  # Skip unformatted version
-
-    # This is a final FORMATTED transcript - write it
-    if event.transcript and event.transcript.strip():
-        # NOTE: Speaker diarization is NOT available in Assembly AI streaming v3 API
-        # All speakers appear in one continuous transcript without labels
-        # Could be solved later with multichannel audio (e.g., Zoom multi-track)
+    if should_write_turn(event, _written_turn_orders):
+        # Single-channel capture: all speakers share one transcript, no labels.
+        # Universal-3.5 Pro can diarize (speaker_labels=True, up to ~10
+        # speakers), but speaker identity is intentionally low priority.
         write_transcript(event.transcript)
 
 
@@ -307,13 +305,16 @@ def main():
         client.on(StreamingEvents.Termination, on_terminated)
         client.on(StreamingEvents.Error, on_error)
 
-        # Connect with streaming parameters
+        # Connect with streaming parameters.
+        # speech_model + prompt + keyterms come from config (shared with Discord
+        # mode). format_turns is intentionally omitted: Universal-3.5 Pro formats
+        # finalized turns inline, and on_turn dedupes by turn_order regardless.
         client.connect(
             StreamingParameters(
                 sample_rate=16000,
-                format_turns=True,
-                # Note: Speaker diarization is not available in streaming v3 yet
-                # Will use single speaker label for now
+                speech_model=STREAMING_SPEECH_MODEL,
+                prompt=STREAMING_PROMPT,
+                keyterms_prompt=STREAMING_KEYTERMS,
             )
         )
 
