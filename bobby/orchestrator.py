@@ -4,13 +4,13 @@ Bobby Orchestrator - Component 2
 Watches meeting transcript, detects triggers, launches/resumes Claude Code agents
 """
 
-import subprocess
+import threading
 import time
 import os
 import sys
 from datetime import datetime
 
-from bobby.config import TRANSCRIPT_FILE, PROGRESS_FILE, PAUSE_FLAG_FILE, BOBBY_SPEECH_FILE, WORKSPACE_DIR
+from bobby.config import TRANSCRIPT_FILE, PROGRESS_FILE, WORKSPACE_DIR
 from bobby.agent_runner import (
     detect_trigger,
     extract_answer as _extract_answer,
@@ -18,9 +18,19 @@ from bobby.agent_runner import (
     launch_agent as _launch_agent,
     resume_agent as _resume_agent,
 )
+from bobby.prompts import (
+    VOICE_ACKNOWLEDGE_LAUNCH,
+    VOICE_ACKNOWLEDGE_RESUME,
+    VOICE_BRAIN_ERROR,
+)
+from bobby.voice import speak_in_meeting
 
 # Debounce window (seconds)
 DEBOUNCE_SECONDS = 30
+
+# Converse gets a shorter window: back-to-back questions are legitimate,
+# transcript echo double-fires are not (mirrors Discord's 10s)
+CONVERSE_DEBOUNCE_SECONDS = 10
 
 # Polling interval (seconds)
 POLL_INTERVAL = 1
@@ -33,11 +43,13 @@ class Orchestrator:
     Triggers:
     - "Hey Bobby, please build this" -> Launch new agent
     - "Thank you, Bobby" -> Resume agent with answer
+    - "Hey Bobby, <anything else>" -> Spoken answer from the brain
     """
 
     def __init__(self, test_voice_only=False):
         self.agent_running = False
         self.last_trigger_time = 0
+        self.last_converse_time = 0
         self.test_voice_only = test_voice_only
 
         # Seek to END of file so we only process NEW content (not old triggers)
@@ -93,64 +105,34 @@ class Orchestrator:
 
     def speak_bob(self, text):
         """
-        Make Bobby speak using ElevenLabs TTS with Eastern European accent.
-
-        Pauses transcription while Bobby speaks to prevent capturing Bobby's own voice.
+        Make Bobby speak using the shared local-mode helper (bobby/voice.py):
+        pauses transcription, speaks via ElevenLabs with macOS `say` fallback,
+        resumes, and records the utterance for self-speech filtering.
 
         Args:
             text: What Bobby should say
         """
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        print(f"\n{'=' * 60}")
-        print(f"[{timestamp}] 🗣️  Bobby says: {text}")
-        print(f"{'=' * 60}\n")
+        speak_in_meeting(text)
 
-        # Create pause flag to stop audio_capture.py from transcribing Bobby's voice
-        try:
-            with open(PAUSE_FLAG_FILE, 'w') as f:
-                f.write(f"Paused for Bobby speech at {timestamp}\n")
-            print(f"[DEBUG] Created pause flag: {PAUSE_FLAG_FILE}")
-        except Exception as e:
-            print(f"Warning: Could not create pause flag: {e}")
+    def handle_conversation(self):
+        """
+        Answer a 'Hey Bobby, ...' utterance with a spoken, transcript-grounded
+        reply (see bobby/brain.py). Blocking (LLM call + TTS) — the watch loop
+        runs this in a daemon thread so trigger polling continues meanwhile.
 
-        # Use ElevenLabs TTS with Bobby's Eastern European voice
-        try:
-            # Import tts from same directory (both in bobby/ folder)
-            from bobby.tts import speak
-            print(f"[DEBUG] Using ElevenLabs TTS with Eastern European voice")
-            speak(text)
-            print(f"[DEBUG] ElevenLabs TTS completed successfully")
-        except Exception as e:
-            print(f"❌ ERROR: ElevenLabs TTS failed: {e}")
-            import traceback
-            traceback.print_exc()
-            # Fallback to macOS say command
-            print(f"[DEBUG] Falling back to macOS 'say' command")
-            try:
-                subprocess.run(
-                    ['say', '-v', 'Alex', text],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=10
-                )
-            except Exception as fallback_error:
-                print(f"Warning: Fallback TTS also failed: {fallback_error}")
+        Local-mode limitation: launch_agent() blocks the watch loop, so unlike
+        Discord mode a converse trigger can't fire mid-build here — no
+        progress tail is passed.
+        """
+        from bobby.brain import ask_brain
 
-        # Remove pause flag to resume transcription
-        try:
-            if os.path.exists(PAUSE_FLAG_FILE):
-                os.remove(PAUSE_FLAG_FILE)
-                print(f"[DEBUG] Removed pause flag, transcription resumed")
-        except Exception as e:
-            print(f"Warning: Could not remove pause flag: {e}")
+        context = self.get_recent_context(lines=20)
+        answer = ask_brain(context)
 
-        # Store what Bobby said so audio_capture can filter it out
-        # (Assembly AI buffers audio during pause and sends it after)
-        try:
-            with open(str(BOBBY_SPEECH_FILE), 'w') as f:
-                f.write(text.lower())
-        except Exception as e:
-            print(f"Warning: Could not write Bobby's speech: {e}")
+        if answer:
+            self.speak_bob(answer)
+        else:
+            self.speak_bob(VOICE_BRAIN_ERROR)
 
     def launch_agent(self, context):
         """
@@ -256,7 +238,6 @@ class Orchestrator:
                     print(f"{'!' * 60}\n")
 
                     # Bobby acknowledges immediately (before agent launch)
-                    from bobby.prompts import VOICE_ACKNOWLEDGE_LAUNCH
                     self.speak_bob(VOICE_ACKNOWLEDGE_LAUNCH)
 
                     # In test mode, stop here (don't launch agent)
@@ -281,6 +262,9 @@ class Orchestrator:
                     print("TRIGGER DETECTED: 'Thank you, Bobby'")
                     print(f"{'!' * 60}\n")
 
+                    # Acknowledge before the resume (voice parity with Discord)
+                    self.speak_bob(VOICE_ACKNOWLEDGE_RESUME)
+
                     # Extract answer from content
                     answer = self.extract_answer(new_content)
 
@@ -288,6 +272,28 @@ class Orchestrator:
 
                     # Resume agent with answer
                     self.resume_agent(answer)
+
+                # Trigger 3: Converse ("Hey Bobby, <anything else>")
+                elif trigger == "converse":
+                    time_since_last = time.time() - self.last_converse_time
+
+                    if time_since_last < CONVERSE_DEBOUNCE_SECONDS:
+                        print(f"\nIgnoring converse trigger (debounced - "
+                              f"{time_since_last:.1f}s < {CONVERSE_DEBOUNCE_SECONDS}s)")
+                        time.sleep(POLL_INTERVAL)
+                        continue
+
+                    self.last_converse_time = time.time()
+
+                    print(f"\n{'!' * 60}")
+                    print("TRIGGER DETECTED: converse ('Hey Bobby, ...')")
+                    print(f"{'!' * 60}\n")
+
+                    # Fire-and-forget so the watcher keeps polling during the
+                    # brain call + TTS (same pattern as Discord mode)
+                    threading.Thread(
+                        target=self.handle_conversation, daemon=True
+                    ).start()
 
                 # Continue polling
                 time.sleep(POLL_INTERVAL)

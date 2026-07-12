@@ -136,6 +136,75 @@ def test_file_truncation_resets_position():
         tmppath.unlink(missing_ok=True)
 
 
+# --- Voice tests ---
+# Voice is off by default (library/test safety); when enabled, QUESTION /
+# COMPLETE / ERROR speak and PROGRESS stays silent.
+
+def test_voice_disabled_by_default():
+    """Default watcher must never reach the speech helper."""
+    from unittest.mock import patch
+    watcher = _make_watcher()
+    assert watcher.voice_enabled is False
+    with patch("bobby.voice.speak_in_meeting") as fake_speak:
+        watcher._speak("anything")
+        fake_speak.assert_not_called()
+
+
+def _make_voiced_watcher():
+    """Watcher with voice on and the actual speech call mocked out."""
+    watcher = _make_watcher()
+    watcher.voice_enabled = True
+    watcher._speak = MagicMock()
+    watcher.send_notification = MagicMock()
+    return watcher
+
+
+def test_question_is_spoken():
+    """QUESTION lines announce and include the question text."""
+    from bobby.prompts import VOICE_ANNOUNCE_QUESTION
+    watcher = _make_voiced_watcher()
+    watcher._display_question = MagicMock()
+
+    watcher.display_update("QUESTION: What color for the button?")
+
+    watcher._speak.assert_called_once()
+    spoken = watcher._speak.call_args[0][0]
+    assert VOICE_ANNOUNCE_QUESTION in spoken
+    assert "What color for the button?" in spoken
+
+
+def test_complete_is_spoken():
+    """COMPLETE lines speak the completion announcement."""
+    from bobby.prompts import VOICE_ANNOUNCE_COMPLETION
+    watcher = _make_voiced_watcher()
+    watcher._display_complete = MagicMock()
+
+    watcher.display_update("COMPLETE: Feature live at localhost")
+
+    watcher._speak.assert_called_once_with(VOICE_ANNOUNCE_COMPLETION)
+
+
+def test_error_is_spoken():
+    """ERROR lines speak the error announcement."""
+    from bobby.prompts import VOICE_ANNOUNCE_ERROR
+    watcher = _make_voiced_watcher()
+    watcher._display_error = MagicMock()
+
+    watcher.display_update("ERROR: Build failed")
+
+    watcher._speak.assert_called_once_with(VOICE_ANNOUNCE_ERROR)
+
+
+def test_progress_is_not_spoken():
+    """PROGRESS lines display but stay silent (they'd be constant chatter)."""
+    watcher = _make_voiced_watcher()
+    watcher._display_progress = MagicMock()
+
+    watcher.display_update("PROGRESS: -> Working on it")
+
+    watcher._speak.assert_not_called()
+
+
 # --- Import tests ---
 
 def test_import_progress_watcher():
@@ -161,4 +230,9 @@ ALL_TESTS = [
     ("Classify unknown line", test_classify_unknown_line),
     ("Message prefix extraction", test_message_extraction),
     ("File truncation resets position", test_file_truncation_resets_position),
+    ("Voice: disabled by default", test_voice_disabled_by_default),
+    ("Voice: QUESTION is spoken with announcement", test_question_is_spoken),
+    ("Voice: COMPLETE is spoken", test_complete_is_spoken),
+    ("Voice: ERROR is spoken", test_error_is_spoken),
+    ("Voice: PROGRESS stays silent", test_progress_is_not_spoken),
 ]

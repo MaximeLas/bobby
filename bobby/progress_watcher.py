@@ -29,15 +29,30 @@ except ImportError:
 
 
 from bobby.config import PROGRESS_FILE
+from bobby.prompts import (
+    VOICE_ANNOUNCE_COMPLETION,
+    VOICE_ANNOUNCE_ERROR,
+    VOICE_ANNOUNCE_QUESTION,
+)
+
 POLL_INTERVAL = 0.5  # seconds - fast enough for real-time feel
 
 
 class ProgressWatcher:
     """Watches agent_progress.txt and displays updates"""
 
-    def __init__(self, progress_file=PROGRESS_FILE):
+    def __init__(self, progress_file=PROGRESS_FILE, voice_enabled=False):
+        """
+        Args:
+            progress_file: Path to agent_progress.txt
+            voice_enabled: Speak questions/completions/errors aloud via the
+                shared local-mode helper (bobby/voice.py). Off by default so
+                library/test use stays silent; main() turns it on (disable
+                at runtime with --no-voice).
+        """
         self.progress_file = progress_file
         self.running = True
+        self.voice_enabled = voice_enabled
         self.console = Console() if RICH_AVAILABLE else None
 
         # Seek to END of file so we only process NEW updates (like orchestrator does)
@@ -127,9 +142,24 @@ class ProgressWatcher:
         except Exception as e:
             print(f"⚠️  Notification error: {e}")
 
+    def _speak(self, text):
+        """
+        Speak aloud via the shared local-mode helper. No-op unless voice is
+        enabled. Blocking — audio for consecutive updates plays serialized,
+        which is what you want from a single speaker in the room.
+        """
+        if not self.voice_enabled:
+            return
+        try:
+            from bobby.voice import speak_in_meeting
+            speak_in_meeting(text)
+        except Exception as e:
+            print(f"⚠️  Voice error: {e}")
+
     def display_update(self, line):
         """
-        Display update in terminal with colors and send notification
+        Display update in terminal with colors, send notification, and (when
+        voice is enabled) speak questions/completions/errors aloud.
 
         Args:
             line: Progress line from agent_progress.txt
@@ -148,18 +178,21 @@ class ProgressWatcher:
             message = line.replace('QUESTION:', '').strip()
             self._display_question(timestamp, message)
             self.send_notification("Bobby Question", message)
+            self._speak(f"{VOICE_ANNOUNCE_QUESTION} {message}")
 
         elif line.startswith('COMPLETE:'):
             update_type = 'COMPLETE'
             message = line.replace('COMPLETE:', '').strip()
             self._display_complete(timestamp, message)
             self.send_notification("Bobby Complete", message)
+            self._speak(VOICE_ANNOUNCE_COMPLETION)
 
         elif line.startswith('ERROR:'):
             update_type = 'ERROR'
             message = line.replace('ERROR:', '').strip()
             self._display_error(timestamp, message)
             self.send_notification("Bobby Error", message)
+            self._speak(VOICE_ANNOUNCE_ERROR)
 
         else:
             # Unknown format - display as-is
@@ -213,6 +246,8 @@ class ProgressWatcher:
             banner_text.append("🤖 Bobby Progress Watcher\n", style="bold cyan")
             banner_text.append(f"Watching: {self.progress_file}\n", style="dim")
             banner_text.append("Notifications: Enabled\n", style="green")
+            voice_status = "Enabled" if self.voice_enabled else "Disabled"
+            banner_text.append(f"Voice: {voice_status}\n", style="green" if self.voice_enabled else "dim")
             banner_text.append("Press Ctrl+C to stop", style="yellow")
 
             panel = Panel(
@@ -227,6 +262,7 @@ class ProgressWatcher:
             print("━" * 60)
             print(f"Watching: {self.progress_file}")
             print("Notifications: Enabled")
+            print(f"Voice: {'Enabled' if self.voice_enabled else 'Disabled'}")
             print("Press Ctrl+C to stop")
             print("━" * 60)
             print()
@@ -294,8 +330,9 @@ class ProgressWatcher:
 
 
 def main():
-    """Entry point"""
-    watcher = ProgressWatcher()
+    """Entry point. Voice is on by default in the run path (--no-voice to disable)."""
+    voice_enabled = '--no-voice' not in sys.argv
+    watcher = ProgressWatcher(voice_enabled=voice_enabled)
     watcher.watch()
 
 

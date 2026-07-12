@@ -38,6 +38,7 @@ TEST_MODULES = [
     "test_agent_runner",
     "test_orchestrator",
     "test_progress_watcher",
+    "test_voice",
     "test_brain",
 ]
 
