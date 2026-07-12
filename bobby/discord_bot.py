@@ -60,6 +60,7 @@ from bobby.prompts import (
     VOICE_ACKNOWLEDGE_RESUME,
     VOICE_ANNOUNCE_RESUME_COMPLETE,
     VOICE_ANNOUNCE_QUESTION,
+    VOICE_BRAIN_ERROR,
 )
 
 # Load .env for bot token
@@ -856,6 +857,7 @@ async def _watch_transcript_for_triggers(text_channel):
         last_position = 0
 
     last_launch_time = 0
+    last_converse_time = 0
     DEBOUNCE_SECONDS = 10
     disconnect_count = 0  # Tolerate brief disconnects (Pycord auto-reconnects)
 
@@ -938,6 +940,54 @@ async def _watch_transcript_for_triggers(text_channel):
             _agent_task = asyncio.create_task(
                 run_resume_agent(text_channel, answer)
             )
+
+        elif trigger == "converse":
+            # "Hey Bobby, <anything else>" — answer from meeting context.
+            # Allowed while an agent is building (that's the point: "Hey
+            # Bobby, how's it going?" reads the progress file).
+            now = time.time()
+            if now - last_converse_time < DEBOUNCE_SECONDS:
+                print(f"Converse trigger debounced ({now - last_converse_time:.0f}s < {DEBOUNCE_SECONDS}s)")
+                continue
+            last_converse_time = now
+
+            print("Converse trigger detected: asking the brain")
+            # Fire-and-forget so the watcher keeps polling during the
+            # 5-15s brain call + TTS playback (same critical pattern as
+            # question announcements in monitor_progress).
+            asyncio.create_task(_handle_conversation(text_channel))
+
+
+async def _handle_conversation(text_channel):
+    """Answer a 'Hey Bobby, ...' utterance: brain call -> voice + text."""
+    from bobby.brain import ask_brain
+
+    context = get_recent_context(TRANSCRIPT_FILE, lines=20)
+
+    # If an agent is building, give the brain the progress tail so status
+    # questions ("how's it going?") get real answers.
+    progress_tail = None
+    if _agent_running and PROGRESS_FILE.exists():
+        try:
+            plines = PROGRESS_FILE.read_text().strip().split('\n')
+            progress_tail = '\n'.join(plines[-6:])
+        except Exception:
+            pass
+
+    answer = await asyncio.to_thread(ask_brain, context, progress_tail)
+
+    if not answer:
+        await _speak_in_voice(VOICE_BRAIN_ERROR)
+        return
+
+    print(f"Brain answer: {answer}")
+    # Voice first (the meeting hears it), text as a persistent record.
+    if text_channel:
+        try:
+            await text_channel.send(f"💬 {answer}")
+        except Exception as e:
+            print(f"Error posting brain answer to channel: {e}")
+    await _speak_in_voice(answer)
 
 
 @bobby_cmds.command(description="Join your voice channel and start listening")
