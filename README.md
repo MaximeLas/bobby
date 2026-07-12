@@ -7,8 +7,10 @@ Bobby can run in two modes: **local mode** (mic capture + terminal UI) or **Disc
 ## Features
 
 - **Real-time code execution** — Bobby listens to the meeting, detects trigger phrases, and launches a Claude Code agent that builds features while the conversation continues
-- **Voice in, voice out** — Speaks with an Eastern European accent (ElevenLabs TTS) to acknowledge triggers, ask clarifying questions, and announce completions
+- **Conversational** — "Hey Bobby, \<anything else\>" gets a short spoken answer grounded in the meeting transcript (and in build progress, mid-build in Discord mode)
+- **Voice in, voice out** — Speaks with an Eastern European accent (ElevenLabs TTS) to acknowledge triggers, ask clarifying questions, and announce completions — in both modes
 - **Question/answer loop** — If the agent needs clarification, it asks via voice and text. Answer naturally and say "Thank you, Bobby" to resume
+- **Proactive suggestions** (opt-in, `BOBBY_PROACTIVE=1`) — Bobby offers to build concrete features he hears the team discussing, heavily rate-limited so he never spams the meeting
 - **Per-speaker transcription** — In Discord mode, each participant gets their own Assembly AI session with speaker labels, so Bobby knows who said what
 - **Live progress tracking** — Discord embeds update in real-time as the agent works, with a detail thread for the full log
 - **Auto-join/leave** — Bobby joins the voice channel when someone enters and leaves when everyone departs
@@ -70,12 +72,16 @@ cp .env.example .env
 
 ```
 bobby/              Python package
-  prompts.py        Bobby's personality, voice lines, and agent prompt template
+  prompts.py        Bobby's personality, voice lines, and all prompt templates
   discord_bot.py    Discord mode — slash commands, voice, progress embeds
   discord_sink.py   Discord audio → Assembly AI (per-speaker transcription)
   agent_runner.py   Shared agent logic (trigger detection, launch, resume)
+  brain.py          Conversational answers (Anthropic API fast path, CLI fallback)
+  suggestions.py    Proactive suggestion engine (BOBBY_PROACTIVE=1)
   orchestrator.py   Local mode — transcript watcher + agent management
   audio_capture.py  Local mode — mic → Assembly AI
+  progress_watcher.py Local mode — Rich UI, notifications, spoken updates
+  voice.py          Local-mode speech helper (mic coordination)
   tts.py            ElevenLabs TTS with macOS say fallback
   config.py         Centralized paths and env vars
 sandbox/            Test workspace (React/Vite app for Bobby to modify)
@@ -92,5 +98,11 @@ Bobby operates on a target workspace (defaults to `./sandbox`). To point it at a
 ```bash
 BOBBY_WORKSPACE=~/Projects/my-app ./start_bobby.sh
 ```
+
+Optional environment variables:
+
+- `BOBBY_DEV_URL` — dev-server URL the agent deploys to and announces (default `http://localhost:5173`; set `http://localhost:3000` for Next.js)
+- `ANTHROPIC_API_KEY` — enables the fast API path for conversational answers (`uv sync --extra brain`); without it, answers go through the `claude` CLI
+- `BOBBY_PROACTIVE=1` — enables proactive suggestions (off by default)
 
 See [CLAUDE.md](CLAUDE.md) for full architecture details and conventions.

@@ -1,8 +1,9 @@
 # Bobby — Where Things Stand & What's Next
 
-_Written 2026-07-12, at the end of the July revival sprint. This is the
-handoff doc: everything here is executable by any capable agent (or Max)
-without additional context. Read this first when picking Bobby back up._
+_Written 2026-07-12, at the end of the July revival sprint; updated later
+the same day after the backlog sprint (PR #3). This is the handoff doc:
+everything here is executable by any capable agent (or Max) without
+additional context. Read this first when picking Bobby back up._
 
 ## Current state
 
@@ -13,7 +14,12 @@ without additional context. Read this first when picking Bobby back up._
   "Hey Bobby, <anything>" with a spoken, transcript-grounded reply
   (`bobby/brain.py`). **Draft: code + offline tests done; needs Max's live
   verification.**
-- Offline suite: `uv run python3 tests/run_tests.py` — 49 tests, no keys needed.
+- **PR #3 (`claude/bobby-capabilities-av0r9h`, stacked on #2)** — the
+  backlog sprint: dev-URL config, brain API fast path, local-mode voice
+  parity, and flag-gated proactive suggestions (all four detailed in the
+  backlog below). **Draft: offline-verified; nothing in it touches the
+  AAI/Discord/DAVE surface, so no new live checklist items beyond #1/#2's.**
+- Offline suite: `uv run python3 tests/run_tests.py` — 90 tests, no keys needed.
 - ElevenLabs plan lapsed → voice output falls back to macOS `say` (works,
   verified). Borat voice returns if the plan (~$5/mo) is renewed.
 - `sandbox/` has uncommitted March demo residue (`/hello` page + router) —
@@ -52,10 +58,11 @@ typed fallback if a voice trigger mis-hears; `/bobby stop` aborts a bad run.
    cd ~/Projects/publico-app
    git worktree add ../publico-demo -b bobby-demo
    cd ../publico-demo && npm install && npm run dev   # note the port
-   BOBBY_WORKSPACE=~/Projects/publico-demo uv run python start_discord.py
+   BOBBY_WORKSPACE=~/Projects/publico-demo BOBBY_DEV_URL=http://localhost:3000 \
+     uv run python start_discord.py
    ```
-   (Vite port in the agent prompt is hardcoded to 5173 in
-   `bobby/prompts.py` — fix or ignore the URL if Next.js uses 3000.)
+   (`BOBBY_DEV_URL` sets the dev-server URL the agent deploys to and
+   announces — defaults to Vite's 5173 for the sandbox.)
 3. **Back-pocket features** (from the David call, 26 Jun): (a) hero page
    upgrade — David: "just whatever, very basic" = safest; (b) drafting-window
    source footnotes — David explicitly wants it; bigger, rehearse first.
@@ -63,21 +70,37 @@ typed fallback if a voice trigger mis-hears; `/bobby stop` aborts a bad run.
 
 ## Backlog (each item self-contained enough to hand to an agent)
 
-- **Local-mode converse + completion voice parity.** Discord speaks
-  everything; local orchestrator only speaks the launch ack. Wire
-  `VOICE_ANNOUNCE_*` + the "converse" trigger route (see
-  `_handle_conversation` in discord_bot.py as the model) into
-  orchestrator.py/progress_watcher.py using bobby/tts.speak.
-- **Brain latency v2.** `bobby/brain.py` uses the `claude` CLI (~5-15s).
-  If too slow live: swap `_run_llm()` for the Anthropic API (needs
-  `ANTHROPIC_API_KEY` + `anthropic` package; keep the CLI as fallback).
+- ~~**Local-mode converse + completion voice parity.**~~ **DONE (PR #3).**
+  New shared helper `bobby/voice.py` (pause flag + self-speech filtering);
+  orchestrator got the converse route + spoken resume ack; progress
+  watcher speaks QUESTION/COMPLETE/ERROR (`--no-voice` to disable). Known
+  limitation: local converse only answers while idle — launch_agent
+  blocks the local watch loop, unlike Discord.
+- ~~**Brain latency v2.**~~ **DONE (PR #3).** `_run_llm()` dispatches to
+  the Anthropic API (~1-3s, `claude-haiku-4-5`) when `ANTHROPIC_API_KEY`
+  is set and `uv sync --extra brain` is installed; any API failure falls
+  back to the CLI. Zero config keeps the old CLI-only behavior.
+- ~~**Prompt URL.**~~ **DONE (PR #3).** `BOBBY_DEV_URL` env var →
+  `config.DEV_SERVER_URL` (default Vite 5173). For the Publico worktree
+  in the runbook above, add `BOBBY_DEV_URL=http://localhost:3000` to the
+  start command.
+- **NEW — Proactive suggestions (PR #3; needs live rehearsal before any
+  demo).** `BOBBY_PROACTIVE=1` makes Bobby offer to build features he
+  hears discussed (`bobby/suggestions.py`; heavily gated — see the module
+  docstring for the six gates). Off by default, so the David demo is
+  unaffected. Rehearsal checklist: tune `ANALYZE_INTERVAL_SECONDS` and
+  `BOBBY_PROACTIVE_COOLDOWN` against real meeting cadence; confirm the
+  pitch lands in character; confirm the no-by-default prompt bar is high
+  enough that Bobby doesn't offer nonsense.
 - **BlackHole → Zoom/Meet capture** (only if DAVE kills Discord receive):
   aggregate device setup in docs/AUDIO_SETUP.md; flip `USE_DEFAULT_MIC`
   in audio_capture.py to env-driven config while at it.
-- **Prompt URL** hardcodes localhost:5173 (bobby/prompts.py) — make the
-  dev-server URL part of config so Publico (Next, port 3000) reports right.
 - **ElevenLabs decision**: renew (~$5/mo Starter) for the Borat voice, or
   ship demos on macOS `say`.
+- **Local-mode mid-build converse.** Blocked on the local orchestrator's
+  synchronous launch_agent; would need the agent subprocess moved to a
+  worker thread like Discord mode. Only worth it if local mode ever
+  becomes more than a test rig.
 
 ## Session-history pointers
 
