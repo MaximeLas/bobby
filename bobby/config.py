@@ -21,6 +21,12 @@ WORKSPACE_DIR = Path(
     os.environ.get("BOBBY_WORKSPACE", str(PROJECT_ROOT / "sandbox"))
 ).resolve()
 
+# Dev-server URL the agent is told to deploy to and report in COMPLETE: lines.
+# Vite (sandbox) serves on 5173; Next.js projects like Publico use 3000 —
+# override alongside BOBBY_WORKSPACE when targeting a non-Vite workspace:
+#     BOBBY_WORKSPACE=~/Projects/publico-demo BOBBY_DEV_URL=http://localhost:3000 ...
+DEV_SERVER_URL = os.environ.get("BOBBY_DEV_URL", "http://localhost:5173")
+
 # Runtime state files (created in the target workspace during sessions)
 TRANSCRIPT_FILE = WORKSPACE_DIR / "meeting_transcript.txt"
 PROGRESS_FILE = WORKSPACE_DIR / "agent_progress.txt"

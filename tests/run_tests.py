@@ -35,6 +35,7 @@ TEST_ARTIFACTS = [TRANSCRIPT_FILE, PROGRESS_FILE, PAUSE_FLAG_FILE, BOBBY_SPEECH_
 # Test modules to discover (each must expose ALL_TESTS)
 TEST_MODULES = [
     "test_config",
+    "test_agent_runner",
     "test_orchestrator",
     "test_progress_watcher",
     "test_brain",

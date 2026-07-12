@@ -78,7 +78,7 @@ Write progress updates to @agent_progress.txt using EXACTLY this format:
 3. Do some work
 4. Write ONE line: "PROGRESS:   ✓ [what you completed]"
 5. Do more work
-6. Write ONE line: "COMPLETE: [summary] at http://localhost:5173"
+6. Write ONE line: "COMPLETE: [summary] at {dev_url}"
 
 STRICT RULES:
 - Each Write operation = EXACTLY ONE LINE starting with "TASK:", "PROGRESS:", "COMPLETE:", or "QUESTION:"
@@ -93,7 +93,7 @@ Example — separate Write operations:
   Write #3:  "PROGRESS:   ✓ Created ContactForm component"
   Write #4:  "PROGRESS: → Adding email validation"
   Write #5:  "PROGRESS:   ✓ Form tested and working"
-  Write #6:  "COMPLETE: Contact form live at http://localhost:5173"
+  Write #6:  "COMPLETE: Contact form live at {dev_url}"
 
 WRONG (do NOT do this):
   - Writing empty lines
@@ -104,5 +104,5 @@ WRONG (do NOT do this):
 If you need clarification, write QUESTION and stop.
 Otherwise, complete the task autonomously.
 
-Deploy to localhost (Vite will auto-reload).
+Deploy to the dev server at {dev_url} (it auto-reloads on save).
 Reference the full meeting transcript at @meeting_transcript.txt if you need more context."""

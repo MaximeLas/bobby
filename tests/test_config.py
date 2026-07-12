@@ -75,9 +75,44 @@ def test_workspace_override():
             importlib.reload(config)
 
 
+def test_dev_url_default():
+    """Default DEV_SERVER_URL should be the sandbox Vite port."""
+    if "BOBBY_DEV_URL" in os.environ:
+        return True  # Skip — custom dev URL is set
+
+    from bobby import config
+    import importlib
+    importlib.reload(config)
+
+    assert config.DEV_SERVER_URL == "http://localhost:5173", \
+        f"Default dev URL should be Vite's 5173, got: {config.DEV_SERVER_URL}"
+
+
+def test_dev_url_override():
+    """BOBBY_DEV_URL env var should override the default dev-server URL."""
+    import importlib
+
+    old_val = os.environ.get("BOBBY_DEV_URL")
+    try:
+        os.environ["BOBBY_DEV_URL"] = "http://localhost:3000"
+        from bobby import config
+        importlib.reload(config)
+
+        assert config.DEV_SERVER_URL == "http://localhost:3000", \
+            f"DEV_SERVER_URL should be overridden, got: {config.DEV_SERVER_URL}"
+    finally:
+        if old_val is None:
+            del os.environ["BOBBY_DEV_URL"]
+        else:
+            os.environ["BOBBY_DEV_URL"] = old_val
+        importlib.reload(config)
+
+
 ALL_TESTS = [
     ("PROJECT_ROOT resolves correctly", test_project_root),
     ("Default workspace is sandbox/", test_default_workspace),
     ("File paths derive from WORKSPACE_DIR", test_file_paths_derive_from_workspace),
     ("BOBBY_WORKSPACE env var overrides default", test_workspace_override),
+    ("Default dev URL is Vite's 5173", test_dev_url_default),
+    ("BOBBY_DEV_URL env var overrides default", test_dev_url_override),
 ]

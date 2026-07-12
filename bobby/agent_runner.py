@@ -122,18 +122,23 @@ def get_recent_context(transcript_file, lines=15):
 
 # --- Agent Prompt ---
 
-def build_agent_prompt(context):
+def build_agent_prompt(context, dev_url=None):
     """
     Build the system prompt for the Claude Code agent.
 
     Args:
         context: Recent meeting transcript or task description
+        dev_url: Dev-server URL the agent reports in COMPLETE: lines
+            (defaults to config.DEV_SERVER_URL / $BOBBY_DEV_URL)
 
     Returns:
         Complete prompt string
     """
     from bobby.prompts import AGENT_PROMPT_TEMPLATE
-    return AGENT_PROMPT_TEMPLATE.format(context=context)
+    if dev_url is None:
+        from bobby.config import DEV_SERVER_URL
+        dev_url = DEV_SERVER_URL
+    return AGENT_PROMPT_TEMPLATE.format(context=context, dev_url=dev_url)
 
 
 # --- Agent Launch/Resume ---
