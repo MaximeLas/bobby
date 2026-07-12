@@ -33,6 +33,20 @@ PROGRESS_FILE = WORKSPACE_DIR / "agent_progress.txt"
 PAUSE_FLAG_FILE = WORKSPACE_DIR / "pause_transcription.flag"
 BOBBY_SPEECH_FILE = WORKSPACE_DIR / "bobby_last_speech.txt"
 
+# Proactive suggestions — Bobby listens for buildable feature ideas in the
+# conversation and offers to build them without being asked. OFF by default:
+# a live demo must never have Bobby butting in uninvited. Opt in per meeting:
+#     BOBBY_PROACTIVE=1 uv run python start_discord.py
+PROACTIVE_ENABLED = os.environ.get("BOBBY_PROACTIVE", "").strip().lower() in (
+    "1", "true", "yes",
+)
+
+# Minimum seconds between two proactive offers (the strongest anti-annoyance
+# gate — one suggestion per five minutes by default)
+PROACTIVE_COOLDOWN_SECONDS = int(
+    os.environ.get("BOBBY_PROACTIVE_COOLDOWN", "300")
+)
+
 # Discord configuration (only used in Discord mode)
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 DISCORD_GUILD_ID = os.environ.get("DISCORD_GUILD_ID", "")

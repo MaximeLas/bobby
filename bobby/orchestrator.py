@@ -10,7 +10,7 @@ import os
 import sys
 from datetime import datetime
 
-from bobby.config import TRANSCRIPT_FILE, PROGRESS_FILE, WORKSPACE_DIR
+from bobby.config import TRANSCRIPT_FILE, PROGRESS_FILE, WORKSPACE_DIR, PROACTIVE_ENABLED
 from bobby.agent_runner import (
     detect_trigger,
     extract_answer as _extract_answer,
@@ -51,6 +51,13 @@ class Orchestrator:
         self.last_trigger_time = 0
         self.last_converse_time = 0
         self.test_voice_only = test_voice_only
+
+        # Proactive suggestions (BOBBY_PROACTIVE=1; see bobby/suggestions.py)
+        if PROACTIVE_ENABLED:
+            from bobby.suggestions import ProactiveEngine
+            self.proactive = ProactiveEngine()
+        else:
+            self.proactive = None
 
         # Seek to END of file so we only process NEW content (not old triggers)
         if os.path.exists(TRANSCRIPT_FILE):
@@ -133,6 +140,16 @@ class Orchestrator:
             self.speak_bob(answer)
         else:
             self.speak_bob(VOICE_BRAIN_ERROR)
+
+    def run_proactive(self, excerpt):
+        """
+        Run one proactive analysis and speak the offer if one comes back.
+        Blocking (LLM + TTS) — the watch loop runs this in a daemon thread.
+        """
+        suggestion = self.proactive.analyze(excerpt, time.time())
+        if suggestion:
+            print(f"Proactive suggestion: {suggestion['feature']}")
+            self.speak_bob(suggestion["voice_line"])
 
     def launch_agent(self, context):
         """
@@ -219,6 +236,24 @@ class Orchestrator:
                 # Check for triggers using shared detection logic
                 trigger = detect_trigger(new_content)
                 print(f"[DEBUG] Trigger detection result: {trigger}")
+
+                # Proactive engine bookkeeping (no-op unless BOBBY_PROACTIVE=1):
+                # trigger-free discussion feeds the engine; explicit triggers
+                # suppress suggestions for a while.
+                if self.proactive is not None:
+                    if trigger is None:
+                        self.proactive.accumulate(new_content)
+                        excerpt = self.proactive.try_begin(
+                            time.time(), agent_running=self.agent_running
+                        )
+                        if excerpt:
+                            threading.Thread(
+                                target=self.run_proactive,
+                                args=(excerpt,),
+                                daemon=True,
+                            ).start()
+                    else:
+                        self.proactive.note_activity(time.time())
 
                 # Trigger 1: Launch agent
                 if trigger == "launch":

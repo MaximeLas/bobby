@@ -40,6 +40,7 @@ TEST_MODULES = [
     "test_progress_watcher",
     "test_voice",
     "test_brain",
+    "test_suggestions",
 ]
 
 

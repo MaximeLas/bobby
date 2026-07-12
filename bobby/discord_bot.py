@@ -39,6 +39,7 @@ from bobby.config import (
     DISCORD_GUILD_ID,
     DISCORD_CHANNEL_ID,
     DISCORD_VOICE_CHANNEL_ID,
+    PROACTIVE_ENABLED,
     PROGRESS_FILE,
     TRANSCRIPT_FILE,
     WORKSPACE_DIR,
@@ -96,6 +97,14 @@ _agent_stopped_by_user = False  # True when /bobby stop killed the agent (suppre
 # Voice state
 _voice_sink = None  # AssemblyAISink instance (active during voice recording)
 _transcript_watcher_task = None  # async task watching transcript for voice triggers
+
+# Proactive suggestions (BOBBY_PROACTIVE=1; see bobby/suggestions.py)
+if PROACTIVE_ENABLED:
+    from bobby.suggestions import ProactiveEngine
+    _proactive_engine = ProactiveEngine()
+    print("Proactive suggestions: ENABLED (BOBBY_PROACTIVE=1)")
+else:
+    _proactive_engine = None
 
 
 @bot.event
@@ -896,7 +905,21 @@ async def _watch_transcript_for_triggers(text_channel):
 
         trigger = detect_trigger(new_content)
         if trigger is None:
+            # Trigger-free discussion feeds the proactive engine (if enabled).
+            # try_begin runs only cheap gates; the LLM analysis + speech is
+            # fire-and-forget so the watcher never blocks.
+            if _proactive_engine is not None:
+                _proactive_engine.accumulate(new_content)
+                excerpt = _proactive_engine.try_begin(
+                    time.time(), agent_running=_agent_running
+                )
+                if excerpt:
+                    asyncio.create_task(_handle_proactive(text_channel, excerpt))
             continue
+
+        # Someone engaged Bobby explicitly — no butting in for a while
+        if _proactive_engine is not None:
+            _proactive_engine.note_activity(time.time())
 
         if trigger == "launch":
             # Debounce launch triggers (prevents transcript echo double-fires)
@@ -956,6 +979,23 @@ async def _watch_transcript_for_triggers(text_channel):
             # 5-15s brain call + TTS playback (same critical pattern as
             # question announcements in monitor_progress).
             asyncio.create_task(_handle_conversation(text_channel))
+
+
+async def _handle_proactive(text_channel, excerpt):
+    """Run one proactive analysis; speak + post the offer if one comes back."""
+    suggestion = await asyncio.to_thread(
+        _proactive_engine.analyze, excerpt, time.time()
+    )
+    if not suggestion:
+        return
+
+    print(f"Proactive suggestion: {suggestion['feature']}")
+    if text_channel:
+        try:
+            await text_channel.send(f"💡 {suggestion['voice_line']}")
+        except Exception as e:
+            print(f"Error posting suggestion to channel: {e}")
+    await _speak_in_voice(suggestion["voice_line"])
 
 
 async def _handle_conversation(text_channel):
