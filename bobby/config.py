@@ -43,10 +43,14 @@ STREAMING_SPEECH_MODEL = "universal-3-5-pro"
 # Natural-language context primes the model on the meeting so the trigger
 # phrase and technical questions transcribe more accurately (cheap accuracy
 # win; ~$0.05/hr beta add-on on Universal-3.5 Pro). Not a command list.
-STREAMING_PROMPT = (
+# Overridable per meeting via BOBBY_STREAMING_PROMPT — a transcription-only
+# session (no Bobby triggers) should prime the model with that meeting's
+# speakers and vocabulary instead of the wake phrase.
+STREAMING_PROMPT = os.environ.get(
+    "BOBBY_STREAMING_PROMPT",
     "A live software product meeting. A participant says "
     "'Hey Bobby, please build this' to trigger a coding assistant, then "
-    "discusses features and asks technical questions."
+    "discusses features and asks technical questions.",
 )
 
 # Keyterm biasing toward Bobby's wake word so the launch trigger transcribes
@@ -55,4 +59,9 @@ STREAMING_PROMPT = (
 # the trigger entirely, which is the worse failure for a live demo. The full
 # 5-word launch phrase guards against stray-"Bobby" false launches, and resume
 # is gated on an outstanding question. Drop/extend this list after rehearsal.
-STREAMING_KEYTERMS = ["Bobby"]
+# Overridable per meeting via BOBBY_STREAMING_KEYTERMS (comma-separated).
+STREAMING_KEYTERMS = [
+    t.strip()
+    for t in os.environ.get("BOBBY_STREAMING_KEYTERMS", "Bobby").split(",")
+    if t.strip()
+]
