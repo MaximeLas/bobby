@@ -18,6 +18,11 @@ without additional context. Read this first when picking Bobby back up._
   verified). Borat voice returns if the plan (~$5/mo) is renewed.
 - `sandbox/` has uncommitted March demo residue (`/hello` page + router) —
   Max to decide: keep or revert. Runtime files there are gitignored.
+- **(Added 5 Aug)** First real-world use happened (4 Aug, sidecar mode) and was
+  measured end-to-end. Sidecar v2 is designed from those measurements:
+  `docs/2026-08-05-sidecar-v2-design.md` (partials + diarization + event-log
+  architecture; replay test harness in `tools/`). One-session implementation,
+  independent of PRs #1/#2.
 
 ## Max's pre-merge checklist (~25 min, in order)
 

@@ -196,8 +196,14 @@ def on_turn(self, event: TurnEvent):
     """
     if should_write_turn(event, _written_turn_orders):
         # Single-channel capture: all speakers share one transcript, no labels.
-        # Universal-3.5 Pro can diarize (speaker_labels=True, up to ~10
-        # speakers), but speaker identity is intentionally low priority.
+        # Streaming diarization IS available and verified (~99% word-level
+        # accuracy on the 2026-08-04 call replay: speaker_labels=True, plus a
+        # SpeakerRevisionEvent that relabels earlier turns at session end, so
+        # the writer must be able to amend, not just append). Partials also
+        # stream by default and are discarded by should_write_turn — right for
+        # wake-word mode, but in sidecar mode it causes 60s monologue
+        # blackouts. Both fixes are designed, not yet built:
+        # docs/2026-08-05-sidecar-v2-design.md.
         write_transcript(event.transcript)
 
 
