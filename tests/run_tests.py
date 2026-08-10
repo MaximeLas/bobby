@@ -38,6 +38,7 @@ TEST_MODULES = [
     "test_orchestrator",
     "test_progress_watcher",
     "test_brain",
+    "test_sidecar",
 ]
 
 

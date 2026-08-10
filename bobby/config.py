@@ -27,6 +27,26 @@ PROGRESS_FILE = WORKSPACE_DIR / "agent_progress.txt"
 PAUSE_FLAG_FILE = WORKSPACE_DIR / "pause_transcription.flag"
 BOBBY_SPEECH_FILE = WORKSPACE_DIR / "bobby_last_speech.txt"
 
+# --- Sidecar mode (transcription-only; docs/2026-08-05-sidecar-v2-design.md) ---
+# BOBBY_SIDECAR=1 switches audio_capture to the v2 pipeline: partials consumed,
+# diarization on, every websocket event logged to EVENTS_FILE (source of
+# truth), TRANSCRIPT_FILE becomes a derived view that can be amended when the
+# server retroactively revises speaker labels. Wake-word modes (orchestrator,
+# Discord) are unaffected by this flag.
+SIDECAR_MODE = os.environ.get("BOBBY_SIDECAR", "") == "1"
+SIDECAR_MAX_SPEAKERS = int(os.environ.get("BOBBY_MAX_SPEAKERS", "2"))
+EVENTS_FILE = WORKSPACE_DIR / "events.jsonl"
+# Optional label→name mapping, applied at render time only (the event log
+# keeps raw A/B labels for provenance). Two sources, merged at each render so
+# it can be set live mid-call: BOBBY_SPEAKER_NAMES="A=Max,B=Steven" env var,
+# and SPEAKER_NAMES_FILE in the workspace (one "A=Max" per line).
+SPEAKER_NAMES = dict(
+    pair.split("=", 1)
+    for pair in os.environ.get("BOBBY_SPEAKER_NAMES", "").split(",")
+    if "=" in pair
+)
+SPEAKER_NAMES_FILE = WORKSPACE_DIR / "speaker_names.txt"
+
 # Discord configuration (only used in Discord mode)
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 DISCORD_GUILD_ID = os.environ.get("DISCORD_GUILD_ID", "")

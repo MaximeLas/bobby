@@ -1,6 +1,8 @@
 # Sidecar v2 — design
 
-_Written 2026-08-05 (overnight), from the measured findings of Bobby's first real-world use (4 Aug Steven call) and the same-audio replay experiment. Evidence: meetings repo `docs/experiments/2026-08-04-realtime-streaming-vs-batch.md` and `…/2026-08-05-streaming-replay-partials-diarization.md`. This is a design for review, deliberately not yet implemented._
+_Written 2026-08-05 (overnight), from the measured findings of Bobby's first real-world use (4 Aug Steven call) and the same-audio replay experiment. Evidence: meetings repo `docs/experiments/2026-08-04-realtime-streaming-vs-batch.md` and `…/2026-08-05-streaming-replay-partials-diarization.md`._
+
+_**Status 2026-08-11: IMPLEMENTED** — `bobby/sidecar.py` + `BOBBY_SIDECAR=1` in `audio_capture.py`, tested offline against the recorded 4 Aug event logs (`tests/test_sidecar.py`, 7 tests). Launcher: max-os `steven/sidecar-transcribe.sh`. One addition beyond this doc: the writer bootstraps its state from `events.jsonl` on startup, so the restart loop can't wipe the derived transcript. ⚠️ The live-endpoint check (`tools/replay_stream.py --sidecar-dir`) is BLOCKED on AssemblyAI account credit ("Insufficient funds", 11 Aug) — top up, rerun it, and only then trust the pipeline for a real call._
 
 ## What changed in our understanding
 

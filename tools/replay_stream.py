@@ -61,7 +61,20 @@ def main():
     ap.add_argument("--mode", default=None)
     ap.add_argument("--prompt", default=None)
     ap.add_argument("--keyterms", default=None, help="comma-separated")
+    ap.add_argument("--sidecar-dir", default=None, metavar="DIR",
+                    help="also drive bobby.sidecar.SidecarWriter with the live "
+                         "events, rendering DIR/meeting_transcript.txt + "
+                         "DIR/events.jsonl — the end-to-end check of the v2 "
+                         "pipeline against the real wire")
     args = ap.parse_args()
+
+    sidecar = None
+    if args.sidecar_dir:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from bobby.sidecar import SidecarWriter
+        d = Path(args.sidecar_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        sidecar = SidecarWriter(d / "meeting_transcript.txt", d / "events.jsonl")
 
     if not os.getenv("ASSEMBLYAI_API_KEY"):
         sys.exit("ASSEMBLYAI_API_KEY not set (expected in ~/Projects/bobby/.env)")
@@ -89,11 +102,19 @@ def main():
             except AttributeError:
                 payload = {"repr": repr(event)}
             emit(kind, payload)
+            if sidecar is not None and kind in ("Begin", "Turn", "SpeakerRevision", "Termination"):
+                sidecar.handle_event(kind, payload)
             if kind in ("Error", "Warning", "Begin", "Termination", "SpeakerRevision"):
                 print(f"[{kind}] {payload}", flush=True)
         return handler
 
-    client = StreamingClient(StreamingClientOptions(api_key=os.environ["ASSEMBLYAI_API_KEY"]))
+    # Default connect_timeout (1s) is too tight for a cold wifi path — a
+    # timed-out handshake here costs a whole rerun, so be generous.
+    client = StreamingClient(StreamingClientOptions(
+        api_key=os.environ["ASSEMBLYAI_API_KEY"],
+        connect_timeout=8.0,
+        max_connection_retries=3,
+    ))
     for ev in ("Begin", "Turn", "SpeakerRevision", "Warning", "Error", "Termination"):
         client.on(StreamingEvents[ev], on_event(ev))
 

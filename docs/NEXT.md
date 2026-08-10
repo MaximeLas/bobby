@@ -21,8 +21,15 @@ without additional context. Read this first when picking Bobby back up._
 - **(Added 5 Aug)** First real-world use happened (4 Aug, sidecar mode) and was
   measured end-to-end. Sidecar v2 is designed from those measurements:
   `docs/2026-08-05-sidecar-v2-design.md` (partials + diarization + event-log
-  architecture; replay test harness in `tools/`). One-session implementation,
-  independent of PRs #1/#2.
+  architecture; replay test harness in `tools/`).
+- **(11 Aug)** Sidecar v2 IMPLEMENTED: `bobby/sidecar.py`, `BOBBY_SIDECAR=1`
+  switch, 7 offline tests replaying recorded real-call events
+  (`tests/test_sidecar.py`). Wake-word paths untouched. Launcher for the next
+  call: max-os `steven/sidecar-transcribe.sh`. ⚠️ AAI account hit
+  "Insufficient funds" (11 Aug) — top up, then rerun the live check:
+  `uv run python tools/replay_stream.py <audio.m4a> --out /tmp/ev.jsonl
+  --start 2280 --duration 120 --speaker-labels --max-speakers 2 --partials
+  --continuous-partials --sidecar-dir /tmp/sidecar-check`.
 
 ## Max's pre-merge checklist (~25 min, in order)
 
