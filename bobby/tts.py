@@ -25,6 +25,30 @@ BOBBY_MODEL = "eleven_flash_v2_5"
 BOBBY_OUTPUT_FORMAT = "mp3_44100_128"  # Standard MP3 format
 
 
+def elevenlabs_error_message(exc):
+    """
+    Human-readable cause of an ElevenLabs SDK failure.
+
+    ApiError carries the real reason ("quota_exceeded: ...", invalid key,
+    voice not found) inside body['detail']['message']; str(exc) is an HTTP
+    header dump that buries it. Local mode is where Bobby is debugged live,
+    so the cause has to be the first thing printed.
+
+    Args:
+        exc: The exception raised by the ElevenLabs SDK
+
+    Returns:
+        str: The API's own message when present, else str(exc)
+    """
+    message = str(exc)
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        detail = body.get("detail", {})
+        if isinstance(detail, dict):
+            message = detail.get("message", message)
+    return message
+
+
 def generate_audio(text):
     """
     Generate speech audio bytes using ElevenLabs.
@@ -36,7 +60,8 @@ def generate_audio(text):
         bytes: MP3 audio data
 
     Raises:
-        Exception: If ElevenLabs API call fails
+        Exception: If ElevenLabs API call fails — callers report the cause
+            via elevenlabs_error_message()
     """
     audio = client.text_to_speech.convert(
         text=text,
@@ -88,7 +113,7 @@ def speak(text):
         return True
 
     except Exception as e:
-        print(f"❌ TTS Error: {e}")
+        print(f"❌ TTS Error: {elevenlabs_error_message(e)}")
         print(f"💬 Fallback text: {text}")
         # Fallback to macOS say command
         try:
