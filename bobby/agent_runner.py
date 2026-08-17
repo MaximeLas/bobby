@@ -31,12 +31,18 @@ def detect_trigger(text):
 
     Stateless — does NOT manage debounce or file position. Caller handles that.
 
+    Order matters: the launch phrase contains "hey bobby", so it must be
+    checked before the generic converse route.
+
     Args:
         text: Raw text to check for triggers
 
     Returns:
         "launch" if "hey bobby please build this" is found,
         "resume" if "thank you bobby" / "thanks bobby" is found,
+        "converse" if Bobby is addressed ("hey bobby") without either
+            trigger phrase — the utterance goes to the brain for a spoken
+            answer (see bobby/brain.py),
         None if no trigger detected
     """
     normalized = normalize_text(text)
@@ -45,6 +51,8 @@ def detect_trigger(text):
         return "launch"
     elif 'thank you bobby' in normalized or 'thanks bobby' in normalized:
         return "resume"
+    elif 'hey bobby' in normalized:
+        return "converse"
 
     return None
 

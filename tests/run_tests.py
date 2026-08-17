@@ -37,6 +37,7 @@ TEST_MODULES = [
     "test_config",
     "test_orchestrator",
     "test_progress_watcher",
+    "test_brain",
 ]
 
 
