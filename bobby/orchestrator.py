@@ -217,8 +217,17 @@ class Orchestrator:
                     time.sleep(POLL_INTERVAL)
                     continue
 
-                # Read new content from file
+                # Read new content from file.
+                # A shrunk file means it was rewritten under us (sidecar v2
+                # replaces the transcript wholesale via os.replace) or
+                # truncated — without the reset, every later read starts past
+                # EOF, returns '', and triggers die silently. Same guard as
+                # discord_bot's watcher.
                 with open(TRANSCRIPT_FILE, 'r') as f:
+                    f.seek(0, 2)
+                    file_size = f.tell()
+                    if file_size < self.last_position:
+                        self.last_position = 0
                     f.seek(self.last_position)
                     new_content = f.read()
                     self.last_position = f.tell()
