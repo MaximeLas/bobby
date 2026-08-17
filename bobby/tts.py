@@ -18,7 +18,10 @@ client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
 
 # Bobby's voice configuration
 BOBBY_VOICE_ID = "lIaJUjvN2nyLPU9wRIa0"  # Eastern European voice
-BOBBY_MODEL = "eleven_turbo_v2_5"  # Fast, high-quality model
+# Flash v2.5: ~75ms latency (vs ~250ms for Turbo), ~half the credit cost, same
+# voice character — matters when Bobby talks during a live call. The custom
+# voice carries the Borat character; the model mostly affects latency/cost.
+BOBBY_MODEL = "eleven_flash_v2_5"
 BOBBY_OUTPUT_FORMAT = "mp3_44100_128"  # Standard MP3 format
 
 

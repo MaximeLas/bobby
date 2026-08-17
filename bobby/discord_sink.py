@@ -22,7 +22,13 @@ from queue import Queue
 
 from discord.sinks.core import Sink, Filters, AudioData, default_filters
 
-from bobby.config import TRANSCRIPT_FILE
+from bobby.config import (
+    TRANSCRIPT_FILE,
+    STREAMING_SPEECH_MODEL,
+    STREAMING_PROMPT,
+    STREAMING_KEYTERMS,
+)
+from bobby.streaming import should_write_turn
 
 logging.basicConfig(
     level=logging.INFO,
@@ -90,6 +96,9 @@ class _UserStream:
         self.thread = None
         self.client = None
         self.connected = threading.Event()
+        # turn_order values already written, so each finalized turn is written
+        # exactly once regardless of the model's emission pattern (see on_turn).
+        self.written_turn_orders = set()
 
 
 class AssemblyAISink(Sink):
@@ -219,14 +228,15 @@ class AssemblyAISink(Sink):
 
             def on_begin(client, event: BeginEvent):
                 logger.info(f"[{stream.display_name}] Assembly AI session started: {event.id}")
+                # Fresh session => turn_order restarts from 0; stale entries
+                # would silently drop the new session's turns.
+                stream.written_turn_orders.clear()
                 stream.connected.set()
 
             def on_turn(client, event: TurnEvent):
-                if not event.end_of_turn:
-                    return
-                if not event.turn_is_formatted:
-                    return
-                if event.transcript and event.transcript.strip():
+                # Finalized-turn gating and dedupe live in streaming.should_write_turn
+                # (shared with local mode — keep the two modes identical).
+                if should_write_turn(event, stream.written_turn_orders):
                     self._write_transcript(event.transcript, stream.display_name)
 
             def on_terminated(client, event: TerminationEvent):
@@ -246,7 +256,9 @@ class AssemblyAISink(Sink):
             stream.client.connect(
                 StreamingParameters(
                     sample_rate=48000,
-                    format_turns=True,
+                    speech_model=STREAMING_SPEECH_MODEL,
+                    prompt=STREAMING_PROMPT,
+                    keyterms_prompt=STREAMING_KEYTERMS,
                 )
             )
 

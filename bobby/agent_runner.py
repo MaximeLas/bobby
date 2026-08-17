@@ -7,6 +7,7 @@ Discord mode (discord_bot.py). No TTS, no pause flags, no notifications —
 each mode's controller handles I/O and announcements separately.
 """
 
+import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -129,6 +130,54 @@ def build_agent_prompt(context):
 
 # --- Agent Launch/Resume ---
 
+def _clean_agent_env():
+    """
+    Environment for the nested `claude` CLI, with parent-session variables
+    stripped.
+
+    If Bobby is started from a terminal that lives inside a Claude Code
+    session, vars like ANTHROPIC_BASE_URL and CLAUDE_CODE_* leak into the
+    agent subprocess and break its authentication (401) or route it to the
+    parent session's endpoint. Stripping them makes the agent authenticate
+    with the user's own stored credentials no matter where Bobby was launched.
+    """
+    env = dict(os.environ)
+    for key in list(env):
+        if key.startswith(("ANTHROPIC_", "CLAUDE_CODE_", "CLAUDE_AGENT_")) or key in (
+            "CLAUDECODE",
+            "CLAUDE_EFFORT",
+        ):
+            env.pop(key)
+    return env
+
+
+# Handle to the currently running agent subprocess, so a controller
+# (e.g. /bobby stop in Discord) can terminate it. Only one agent runs at a
+# time by design; assignment happens in the thread running launch/resume.
+_active_proc = None
+
+
+def stop_agent(timeout=5):
+    """
+    Terminate the currently running agent subprocess, if any.
+
+    Returns True if a running agent was found and stopped, False otherwise.
+    Safe to call from any thread.
+    """
+    global _active_proc
+    proc = _active_proc
+    if proc is None or proc.poll() is not None:
+        return False
+
+    proc.terminate()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+    return True
+
+
 def write_session_header(progress_file):
     """Write a session marker to the progress file."""
     try:
@@ -161,15 +210,17 @@ def launch_agent(context, workspace_dir, progress_file):
     print(f"Working directory: {workspace_dir}")
     print("Agent is now running...\n")
 
+    global _active_proc
     try:
-        result = subprocess.run(
+        _active_proc = subprocess.Popen(
             ['claude', '-p', '--dangerously-skip-permissions', prompt],
-            capture_output=False,
             text=True,
-            cwd=str(workspace_dir)
+            cwd=str(workspace_dir),
+            env=_clean_agent_env(),
         )
-        print(f"\nAgent process exited with code: {result.returncode}")
-        return result.returncode
+        returncode = _active_proc.wait()
+        print(f"\nAgent process exited with code: {returncode}")
+        return returncode
 
     except FileNotFoundError:
         print("ERROR: 'claude' command not found. Is Claude Code CLI installed?")
@@ -177,6 +228,8 @@ def launch_agent(context, workspace_dir, progress_file):
     except Exception as e:
         print(f"ERROR launching agent: {e}")
         return -1
+    finally:
+        _active_proc = None
 
 
 def resume_agent(answer, workspace_dir):
@@ -199,15 +252,17 @@ Please continue with the task. Write progress updates to @agent_progress.txt usi
     print("Executing: claude -p --continue [answer]")
     print("Agent is now running...\n")
 
+    global _active_proc
     try:
-        result = subprocess.run(
+        _active_proc = subprocess.Popen(
             ['claude', '-p', '--dangerously-skip-permissions', '--continue', prompt],
-            capture_output=False,
             text=True,
-            cwd=str(workspace_dir)
+            cwd=str(workspace_dir),
+            env=_clean_agent_env(),
         )
-        print(f"\nAgent process exited with code: {result.returncode}")
-        return result.returncode
+        returncode = _active_proc.wait()
+        print(f"\nAgent process exited with code: {returncode}")
+        return returncode
 
     except FileNotFoundError:
         print("ERROR: 'claude' command not found. Is Claude Code CLI installed?")
@@ -215,3 +270,5 @@ Please continue with the task. Write progress updates to @agent_progress.txt usi
     except Exception as e:
         print(f"ERROR resuming agent: {e}")
         return -1
+    finally:
+        _active_proc = None
