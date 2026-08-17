@@ -47,6 +47,22 @@ PROACTIVE_COOLDOWN_SECONDS = int(
     os.environ.get("BOBBY_PROACTIVE_COOLDOWN", "300")
 )
 
+# Lean agent launches — ON by default. A Bobby agent is a headless `claude -p`
+# run that inherits whoever launched Bobby: measured 17 Aug 2026 at ~120 global
+# skills and a dozen personal MCP servers, ~59k wasted cache tokens and ~5s of
+# extra startup latency per launch, none of which a sandbox React edit needs.
+# Lean mode drops all of it (--strict-mcp-config --setting-sources ''
+# --disable-slash-commands). Rollback if a task ever does need a personal skill
+# or MCP server — nothing else changes:
+#     BOBBY_LEAN_AGENT=0 ./start_bobby.sh
+LEAN_AGENT_ENABLED = os.environ.get("BOBBY_LEAN_AGENT", "1").strip().lower() in (
+    "1", "true", "yes",
+)
+
+# Hard ceiling on one agent run's API spend (claude --max-budget-usd, which
+# only applies in print mode — Bobby always launches with -p). Unset = no cap.
+AGENT_MAX_BUDGET_USD = os.environ.get("BOBBY_AGENT_MAX_BUDGET_USD", "").strip() or None
+
 # --- Sidecar mode (transcription-only; docs/2026-08-05-sidecar-v2-design.md) ---
 # BOBBY_SIDECAR=1 switches audio_capture to the v2 pipeline: partials consumed,
 # diarization on, every websocket event logged to EVENTS_FILE (source of
@@ -66,6 +82,19 @@ SPEAKER_NAMES = dict(
     if "=" in pair
 )
 SPEAKER_NAMES_FILE = WORKSPACE_DIR / "speaker_names.txt"
+
+# Speaker labels in the WAKE-WORD (non-sidecar) local mode. OFF by default:
+# that path stays lean on purpose — every extra streaming parameter is one more
+# thing that can shift transcription behavior mid-demo, and the trigger phrase
+# does not care who said it. Turn it on when two people share one mic and the
+# agent needs to know who asked for what:
+#     BOBBY_SPEAKER_LABELS=1 BOBBY_SPEAKER_NAMES="A=Max,B=David" ./start_bobby.sh
+# Labels are display-only — diarization is added, partials are NOT, so the
+# finalized-turn gate that triggers builds is unchanged. Sidecar mode ignores
+# this flag (it always diarizes).
+SPEAKER_LABELS_ENABLED = os.environ.get("BOBBY_SPEAKER_LABELS", "").strip().lower() in (
+    "1", "true", "yes",
+)
 
 # Discord configuration (only used in Discord mode)
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")

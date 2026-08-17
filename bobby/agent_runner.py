@@ -8,6 +8,7 @@ each mode's controller handles I/O and announcements separately.
 """
 
 import os
+import shlex
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -164,6 +165,30 @@ def _clean_agent_env():
     return env
 
 
+def _agent_flags():
+    """
+    Extra `claude` flags shared by the launch and resume paths.
+
+    Read at call time (not import time) so a reloaded/patched config takes
+    effect — see bobby.config for what lean mode drops and how to roll it back.
+
+    Returns:
+        list[str]: flags to insert before the prompt argument
+    """
+    from bobby.config import AGENT_MAX_BUDGET_USD, LEAN_AGENT_ENABLED
+
+    flags = []
+    if LEAN_AGENT_ENABLED:
+        flags += [
+            '--strict-mcp-config',      # ignore the launching user's MCP servers
+            '--setting-sources', '',    # no user/project/local settings
+            '--disable-slash-commands',  # no skills
+        ]
+    if AGENT_MAX_BUDGET_USD:
+        flags += ['--max-budget-usd', str(AGENT_MAX_BUDGET_USD)]
+    return flags
+
+
 # Handle to the currently running agent subprocess, so a controller
 # (e.g. /bobby stop in Discord) can terminate it. Only one agent runs at a
 # time by design; assignment happens in the thread running launch/resume.
@@ -219,14 +244,16 @@ def launch_agent(context, workspace_dir, progress_file):
 
     prompt = build_agent_prompt(context)
 
-    print("Executing: claude -p --dangerously-skip-permissions [prompt]")
+    cmd = ['claude', '-p', '--dangerously-skip-permissions'] + _agent_flags() + [prompt]
+
+    print(f"Executing: {shlex.join(cmd[:-1])} [prompt]")
     print(f"Working directory: {workspace_dir}")
     print("Agent is now running...\n")
 
     global _active_proc
     try:
         _active_proc = subprocess.Popen(
-            ['claude', '-p', '--dangerously-skip-permissions', prompt],
+            cmd,
             text=True,
             cwd=str(workspace_dir),
             env=_clean_agent_env(),
@@ -262,13 +289,16 @@ def resume_agent(answer, workspace_dir):
 
 Please continue with the task. Write progress updates to @agent_progress.txt using APPEND mode only (never overwrite). Use the same format: PROGRESS: and COMPLETE: prefixes."""
 
-    print("Executing: claude -p --continue [answer]")
+    cmd = (['claude', '-p', '--dangerously-skip-permissions']
+           + _agent_flags() + ['--continue', prompt])
+
+    print(f"Executing: {shlex.join(cmd[:-1])} [answer]")
     print("Agent is now running...\n")
 
     global _active_proc
     try:
         _active_proc = subprocess.Popen(
-            ['claude', '-p', '--dangerously-skip-permissions', '--continue', prompt],
+            cmd,
             text=True,
             cwd=str(workspace_dir),
             env=_clean_agent_env(),
