@@ -1,29 +1,36 @@
 # Bobby — Where Things Stand & What's Next
 
 _Written 2026-07-12, at the end of the July revival sprint; updated later
-the same day after the backlog sprint (PR #3). This is the handoff doc:
-everything here is executable by any capable agent (or Max) without
-additional context. Read this first when picking Bobby back up._
+the same day after the backlog sprint (PR #3), and again **17 Aug 2026 post-merge**.
+This is the handoff doc: everything here is executable by any capable agent
+(or Max) without additional context. Read this first when picking Bobby back up._
 
-## Current state
+## Current state (as of 17 Aug 2026, late evening)
 
-- **PR #1 (`revival/universal-3-5-pro`)** — the revival: Universal-3.5 Pro
-  Realtime, DAVE-era py-cord 2.8, stoppable agent, `/bobby resume|stop`,
-  fresh-eyes review applied. **Open, awaiting Max's checklist + merge.**
-- **PR #2 (`feature/conversational-bobby`, stacked on #1)** — Bobby answers
-  "Hey Bobby, <anything>" with a spoken, transcript-grounded reply
-  (`bobby/brain.py`). **Draft: code + offline tests done; needs Max's live
-  verification.**
-- **PR #3 (`claude/bobby-capabilities-av0r9h`, stacked on #2)** — the
-  backlog sprint: dev-URL config, brain API fast path, local-mode voice
-  parity, and flag-gated proactive suggestions (all four detailed in the
-  backlog below). **Draft: offline-verified; nothing in it touches the
-  AAI/Discord/DAVE surface, so no new live checklist items beyond #1/#2's.**
-- Offline suite: `uv run python3 tests/run_tests.py` — 90 tests, no keys needed.
-- ElevenLabs plan lapsed → voice output falls back to macOS `say` (works,
-  verified). Borat voice returns if the plan (~$5/mo) is renewed.
-- `sandbox/` has uncommitted March demo residue (`/hello` page + router) —
-  Max to decide: keep or revert. Runtime files there are gitignored.
+- **The PR stack (#1 → #2 → #3) is MERGED and all branches are deleted** — work
+  happens on `main` from first principles now. One catch made during the merge,
+  recorded in merge commit `52ec08f`: PR #2's head on GitHub was the 12 Jul tip;
+  the 4–17 Aug commits (per-meeting streaming config, sidecar v2 + docs) were
+  committed locally and **never pushed**, so they reached main via a follow-up
+  local merge, not through any PR. Lesson: "PR is MERGEABLE" says nothing about
+  whether local work reached the PR.
+- Both live checks passed 17 Aug evening (agent loop built+verified a page;
+  brain answered in 10s, in character). ElevenLabs Borat voice live-verified
+  the same day (Starter plan, key `bobby-local`).
+- Offline suite: `uv run python3 tests/run_tests.py` — 97 tests, no keys needed
+  (90 from the PR stack + 7 sidecar replay tests).
+- `sandbox/` is the committed blank canvas (March residue reverted 17 Aug;
+  runtime files gitignored). `tools/reset_sandbox.sh` returns it to this state
+  after any test/demo run.
+- `docs/modes.md` (added 17 Aug) is the map of what Bobby's modes actually are
+  (stance vs rig) — read it before adding a "mode".
+- **Sidecar v2 live wire check — still pending, and it is the FIRST real run, not
+  a rerun** (both 11 Aug attempts failed — connect timeout, then the unfunded
+  account; the 10 Aug Steven call used no live transcription; every green result
+  so far is an offline replay). Now that keys are fixed:
+  `uv run python tools/replay_stream.py <audio.m4a> --out /tmp/ev.jsonl
+  --start 2280 --duration 120 --speaker-labels --max-speakers 2 --partials
+  --continuous-partials --sidecar-dir /tmp/sidecar-check`.
 - **(Added 5 Aug)** First real-world use happened (4 Aug, sidecar mode) and was
   measured end-to-end. Sidecar v2 is designed from those measurements:
   `docs/2026-08-05-sidecar-v2-design.md` (partials + diarization + event-log
@@ -95,7 +102,55 @@ additional context. Read this first when picking Bobby back up._
 - **ElevenAgents (full-duplex conversational Bobby)** — a real architectural rewrite on
   a separate EL product/plan. Parked, named, not scoped.
 
-## Max's pre-merge checklist (~25 min, in order)
+### Added 17 Aug late (post-merge session, from Max's design stream)
+
+- **End-to-end pipeline tests, two tiers** (Max: costs are a non-issue — AAI has deep
+  credits, CLI rides his plan, EL is cents; he wants at least one such test SOON and a
+  design session with a Fable agent thinking alongside him). Tier 1, deterministic and
+  CI-able: feed a recorded multi-speaker clip into the AAI streaming session via the
+  replay harness, append a trigger clip ("Hey Bobby, please build this"), assert
+  transcript forms → labels appear → `detect_trigger` fires → agent launches (stubbed).
+  Tier 2, acoustic: play the same clips through the room speakers while real capture
+  runs — proves the mic path, TCC permissions, pause-flag behavior, TTS overlap.
+  Shared fixture idea: ~30s two-speaker chat, then the trigger. Grow into an edge-case
+  suite (overlaps, Bobby-self-speech, resume phrasing).
+- **Per-workspace Bobby config file + onboarding (the design anchor for the next
+  arc).** Optional file in the target workspace; Bobby works unchanged without it.
+  Converged fields from two independent design passes: stance preset (see
+  `docs/modes.md`) · `session_dir` vs `repo` split (with `repo` unset ⇒ authority
+  capped at advise) · `may_act` speaker allowlist · MCP-server/tool selection (the
+  fix for both the config-tax and "publico wants Supabase MCP") · model + budget ·
+  dev URL (`BOBBY_DEV_URL` generalizes into it) · voice/persona. Max's onboarding
+  idea: a guided pass that inspects what would enter the agent's context in that
+  workspace, lets the user pick servers/tools/skills/model, and emits the file.
+- **Proactive refinements** (park for a dedicated session): evaluate at
+  speaker-turn boundaries instead of the 45s clock (Max's ask); a delayed-response
+  posture ("let me come back to what you discussed earlier…"); a `nudge` middle
+  channel (chime/embed/terminal — needs far fewer gates than taking the floor, and
+  today the vocabulary has no word for it); and consider post-meeting proactive
+  ("build the three things we agreed") BEFORE in-meeting proactive — async push+act
+  steals no floor and reads a complete transcript.
+- **Permission bridge (the auto-mode migration path).** Decided 17 Aug: the demo
+  keeps `--dangerously-skip-permissions`. The future: `--permission-mode auto`
+  (exists, verified on 2.1.233 — classifier-gated, and in headless `-p` a blocked
+  action degrades gracefully instead of hanging) plus `--permission-prompt-tool`,
+  which routes permission prompts to an external answerer — architecturally, that
+  answerer is Bobby's existing QUESTION: protocol ("the agent wants to run a
+  migration — approve?" → "Thank you Bobby, yes"). Facts that matter: headless
+  runs do NOT inherit the interactive default mode (flag must be explicit), and
+  Max's open question — whether the classifier's deny surfaces as an approvable
+  ask or a silent skip — is the first thing the bridge design must answer.
+- **Local-mode mid-build converse fix.** `launch_agent()` blocks the orchestrator
+  watch loop, so "Hey Bobby, how's it going?" during a build answers in Discord
+  mode but not local (PR #3's documented limitation). Fix = run the agent
+  off-loop like Discord does. Until then: keep mid-build questions out of local
+  demos — Bobby already speaks QUESTION/COMPLETE, so there's live feedback.
+
+## Max's pre-merge checklist (~25 min, in order) — ✅ SUPERSEDED 17 Aug
+
+_Steps 1–3 and 5 were done 17 Aug (keys fixed, both live checks green, stack
+merged). Step 4 — the Discord/DAVE go/no-go — is deliberately deferred to
+Discord week, after the local in-person demo. Kept for that week:_
 
 1. `.env`: set `ASSEMBLYAI_API_KEY` to the working key (the one in `.zshrc`).
    The committed code never sees your key; `.env` is gitignored.
@@ -123,16 +178,24 @@ typed fallback if a voice trigger mis-hears; `/bobby stop` aborts a bad run.
 
 1. **Rehearse solo on sandbox** (any small feature; do the full voice loop).
 2. **Rehearse solo on Publico** via a throwaway worktree so `main` is
-   structurally untouchable:
+   structurally untouchable (LOCAL mode per the 17 Aug decision — swap the
+   launcher for `start_discord.py` in Discord week):
    ```bash
    cd ~/Projects/publico-app
    git worktree add ../publico-demo -b bobby-demo
-   cd ../publico-demo && npm install && npm run dev   # note the port
-   BOBBY_WORKSPACE=~/Projects/publico-demo BOBBY_DEV_URL=http://localhost:3000 \
-     uv run python start_discord.py
+   cd ../publico-demo && npm install && npm run dev   # Next.js → port 3000
+   cd ~/Projects/bobby
+   BOBBY_WORKSPACE=~/Projects/publico-demo BOBBY_DEV_URL=http://localhost:3000 ./start_bobby.sh
    ```
    (`BOBBY_DEV_URL` sets the dev-server URL the agent deploys to and
    announces — defaults to Vite's 5173 for the sandbox.)
+   **Rehearsal-gated flags (added 17 Aug late) — try both in step 1; each rolls
+   back with one env var if it misbehaves:** `BOBBY_LEAN_AGENT` (default ON:
+   Bobby's agents stop inheriting Max's personal MCP servers/skills — measured
+   ~59k wasted cache tokens + ~5s launch latency each; `=0` restores the old
+   behavior) and `BOBBY_SPEAKER_LABELS=1` (default OFF: `[A]/[B]` labels +
+   `speaker_names.txt` name mapping in the local transcript so Bobby can tell
+   Max from David — ASR guesses, caveated in the prompts).
 3. **Back-pocket features** (from the David call, 26 Jun): (a) hero page
    upgrade — David: "just whatever, very basic" = safest; (b) drafting-window
    source footnotes — David explicitly wants it; bigger, rehearse first.

@@ -2,7 +2,7 @@
 
 AI meeting assistant that executes code tasks in real-time. Say "Hey Bobby, please build this" during a meeting and Bobby launches a Claude Code agent to build the feature while the conversation continues.
 
-Bobby can run in two modes: **local mode** (mic capture + terminal UI) or **Discord mode** (joins a voice channel as a bot participant).
+Bobby can run in two participant modes — **local mode** (mic capture + terminal UI) and **Discord mode** (joins a voice channel as a bot participant) — plus a silent **sidecar mode** (`BOBBY_SIDECAR=1`): live diarized transcription only, with speaker labels, sub-2s partial updates, and an event log, for meetings where Bobby assists one person privately instead of joining the room. The full map of what these modes are (and aren't) lives in [docs/modes.md](docs/modes.md).
 
 ## Features
 
@@ -104,5 +104,16 @@ Optional environment variables:
 - `BOBBY_DEV_URL` — dev-server URL the agent deploys to and announces (default `http://localhost:5173`; set `http://localhost:3000` for Next.js)
 - `ANTHROPIC_API_KEY` — enables the fast API path for conversational answers (`uv sync --extra brain`); without it, answers go through the `claude` CLI
 - `BOBBY_PROACTIVE=1` — enables proactive suggestions (off by default)
+- `BOBBY_LEAN_AGENT=0` — restores full config inheritance for Bobby's agents (lean launches are on by default: agents skip the launching user's personal MCP servers/skills for faster, cheaper starts)
+- `BOBBY_SPEAKER_LABELS=1` — `[A]/[B]` diarization labels in the local-mode transcript (display-only; name speakers via `BOBBY_SPEAKER_NAMES="A=Max,B=David"` or a `speaker_names.txt` in the workspace)
+- `BOBBY_SIDECAR=1` — silent sidecar mode (see [docs/modes.md](docs/modes.md))
+- `BOBBY_AGENT_MAX_BUDGET_USD` — hard per-run spend ceiling for agent launches
 
 See [CLAUDE.md](CLAUDE.md) for full architecture details and conventions.
+
+## Status & direction
+
+Bobby is in active development. Current state, the near-term plan, and the
+longer-horizon ideas (per-workspace config, end-to-end pipeline tests, a
+permission bridge, post-meeting mode) are tracked in [docs/NEXT.md](docs/NEXT.md);
+the conceptual map of operating modes is [docs/modes.md](docs/modes.md).
