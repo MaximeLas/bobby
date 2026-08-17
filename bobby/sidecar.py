@@ -41,6 +41,54 @@ def _norm_words(words):
     return out
 
 
+def _word_speaker(word):
+    """Per-word speaker, from a dict (event.model_dump()) or a live SDK Word."""
+    if isinstance(word, dict):
+        return word.get("speaker")
+    return getattr(word, "speaker", None)
+
+
+# --- Speaker-label helpers, shared with audio_capture's labeled wake-word mode
+# (BOBBY_SPEAKER_LABELS=1). Module-level so that mode reuses this rendering
+# instead of growing a second, drifting copy of it.
+
+def resolve_speaker_names(base_names=None, names_file=None):
+    """
+    Label→name mapping merged from a base dict and an optional file.
+
+    Re-read at every render so names can be assigned live mid-call: one
+    "A=Max" per line in the file, which wins over the base dict.
+    """
+    names = dict(base_names or {})
+    if names_file and os.path.exists(names_file):
+        try:
+            with open(names_file) as f:
+                for line in f:
+                    if "=" in line:
+                        k, v = line.strip().split("=", 1)
+                        if k.strip() and v.strip():
+                            names[k.strip()] = v.strip()
+        except OSError:
+            pass
+    return names
+
+
+def format_speaker_label(label, names, uncertain=False):
+    """Render a label for the transcript: "[Max]", "[Max~]" if uncertain, "[?]" if unknown."""
+    if not label:
+        return "[?~]" if uncertain else "[?]"
+    shown = names.get(label, label)
+    return f"[{shown}~]" if uncertain else f"[{shown}]"
+
+
+def turn_speaker_label(words, turn_label):
+    """The turn's own speaker label, falling back to its last labeled word."""
+    if turn_label:
+        return turn_label
+    labels = [s for s in (_word_speaker(w) for w in words) if s in ("A", "B", "C", "D")]
+    return labels[-1] if labels else None
+
+
 class SidecarWriter:
     """Feed it events; it keeps events.jsonl and the derived transcript current.
 
@@ -177,10 +225,8 @@ class SidecarWriter:
         self._render()
 
     def _partial_label(self, words, turn_label):
-        if turn_label:
-            return turn_label
-        labels = [w.get("speaker") for w in words if w.get("speaker") in ("A", "B", "C", "D")]
-        return labels[-1] if labels else None
+        """See turn_speaker_label()."""
+        return turn_speaker_label(words, turn_label)
 
     # ------------------------------------------------------- overlap recovery
 
@@ -246,24 +292,12 @@ class SidecarWriter:
     # ---------------------------------------------------------------- render
 
     def _speaker_names(self):
-        names = dict(self.base_speaker_names)
-        if self.speaker_names_file and os.path.exists(self.speaker_names_file):
-            try:
-                with open(self.speaker_names_file) as f:
-                    for line in f:
-                        if "=" in line:
-                            k, v = line.strip().split("=", 1)
-                            if k.strip() and v.strip():
-                                names[k.strip()] = v.strip()
-            except OSError:
-                pass
-        return names
+        """See resolve_speaker_names()."""
+        return resolve_speaker_names(self.base_speaker_names, self.speaker_names_file)
 
     def _fmt_label(self, label, names, uncertain=False):
-        if not label:
-            return "[?~]" if uncertain else "[?]"
-        shown = names.get(label, label)
-        return f"[{shown}~]" if uncertain else f"[{shown}]"
+        """See format_speaker_label()."""
+        return format_speaker_label(label, names, uncertain)
 
     _in_bootstrap = False
 

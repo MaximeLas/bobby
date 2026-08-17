@@ -14,6 +14,8 @@ venv/
 **/agent_progress.txt
 **/bobby_last_speech.txt
 **/pause_transcription.flag
+**/events.jsonl
+**/speaker_names.txt
 
 # Node.js (sandbox)
 sandbox/node_modules/

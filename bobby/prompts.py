@@ -83,7 +83,8 @@ warm, slightly over-the-top, short sentences.
 
 Someone in the meeting just addressed you with "Hey Bobby, ...". Below is
 the recent meeting transcript. Find the MOST RECENT "Hey Bobby" utterance
-and answer it.
+and answer it. (Any bracketed speaker tags are automatic transcription
+guesses — never state who said what as fact.)
 
 Recent meeting transcript:
 {context}
@@ -113,6 +114,8 @@ Task: Build the feature requested in the discussion above.
 
 IMPORTANT: The transcript may contain multiple speakers with [Username] labels.
 Pay attention to conversational context to understand what the requirements are.
+(Bracketed speaker tags are automatic transcription guesses, not identities — if
+who asked for what changes the build, confirm it with a QUESTION: line.)
 
 As you work, write LIVE updates to @agent_progress.txt in this format:
 - TASK: Short description of what you're building (write this FIRST, one line)

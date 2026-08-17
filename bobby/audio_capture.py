@@ -4,9 +4,10 @@ Bobby Audio Capture - Component 1
 Captures audio from BlackHole virtual audio device (or the default mic) and
 streams it to Assembly AI for real-time transcription.
 
-Single-channel capture, so all speakers share one unlabeled transcript. Writes
-to meeting_transcript.txt in the format:
+Single-channel capture: one shared transcript, unlabeled by default. Writes to
+meeting_transcript.txt in the format:
 [HH:MM:SS] transcript text
+[HH:MM:SS] [Max] transcript text     (with BOBBY_SPEAKER_LABELS=1)
 """
 
 import os
@@ -29,9 +30,15 @@ from bobby.config import (
     EVENTS_FILE,
     SPEAKER_NAMES,
     SPEAKER_NAMES_FILE,
+    SPEAKER_LABELS_ENABLED,
 )
 from bobby.streaming import should_write_turn
-from bobby.sidecar import SidecarWriter
+from bobby.sidecar import (
+    SidecarWriter,
+    format_speaker_label,
+    resolve_speaker_names,
+    turn_speaker_label,
+)
 from assemblyai.streaming.v3 import (
     BeginEvent,
     StreamingClient,
@@ -154,8 +161,17 @@ def get_timestamp():
     return datetime.now().strftime("%H:%M:%S")
 
 
-def write_transcript(text):
-    """Write transcript line to file with timestamp (single-channel: no speaker labels)"""
+def write_transcript(text, label=None):
+    """
+    Write a transcript line to file with timestamp.
+
+    Single-channel, so a line is "[HH:MM:SS] text" — unless speaker labels are
+    on (BOBBY_SPEAKER_LABELS=1) and the turn carried one, giving
+    "[HH:MM:SS] [Max] text". `label` is the raw diarization label ("A"/"B");
+    the display name comes from the same SPEAKER_NAMES / speaker_names.txt
+    mapping sidecar mode renders with, re-read per line so names can be
+    assigned live mid-meeting.
+    """
     # Check if transcription is paused (Bobby is speaking)
     pause_flag = PAUSE_FLAG_FILE
     if pause_flag.exists():
@@ -182,7 +198,11 @@ def write_transcript(text):
 
     # Format transcript line
     timestamp = get_timestamp()
-    line = f"[{timestamp}] {text}\n"
+    if label:
+        names = resolve_speaker_names(SPEAKER_NAMES, SPEAKER_NAMES_FILE)
+        line = f"[{timestamp}] {format_speaker_label(label, names)} {text}\n"
+    else:
+        line = f"[{timestamp}] {text}\n"
 
     # Open, write, close - triggers IDE file watchers immediately
     with open(TRANSCRIPT_FILE, 'a') as f:
@@ -201,6 +221,18 @@ def on_begin(self, event: BeginEvent):
     logger.info("Listening for audio... (Press Ctrl+C to stop)")
 
 
+def _speaker_label(event):
+    """
+    Raw diarization label for a finalized turn, or None when labels are off.
+
+    Display-only: should_write_turn still decides WHICH turns get written, so
+    enabling labels cannot change trigger behavior.
+    """
+    if not SPEAKER_LABELS_ENABLED:
+        return None
+    return turn_speaker_label(event.words or [], event.speaker_label)
+
+
 def on_turn(self, event: TurnEvent):
     """
     Called for each transcription turn.
@@ -208,7 +240,8 @@ def on_turn(self, event: TurnEvent):
     Wake-word mode: finalized-turn gating and dedupe live in
     streaming.should_write_turn (shared with Discord mode — keep the two
     modes identical). Partials are discarded there so a trigger can't fire
-    mid-word, and the transcript has no speaker labels.
+    mid-word; speaker labels are added to the written line only when
+    BOBBY_SPEAKER_LABELS=1.
 
     Sidecar mode (BOBBY_SIDECAR=1): every turn event — partials included —
     feeds the v2 pipeline (bobby/sidecar.py), which logs it to events.jsonl
@@ -219,7 +252,7 @@ def on_turn(self, event: TurnEvent):
         _sidecar.handle_event("Turn", event.model_dump())
         return
     if should_write_turn(event, _written_turn_orders):
-        write_transcript(event.transcript)
+        write_transcript(event.transcript, label=_speaker_label(event))
 
 
 def on_speaker_revision(self, event):
@@ -359,7 +392,8 @@ def main():
         # call replay: labels ~99% word-accurate, finals every ~10s instead of
         # 60s walls, and partials carry overlapped interjections (see
         # docs/2026-08-05-sidecar-v2-design.md). Wake-word mode keeps the lean
-        # parameters — its trigger path never consumes partials or labels.
+        # parameters, adding diarization alone when BOBBY_SPEAKER_LABELS=1 —
+        # never partials, which would let a trigger fire mid-word.
         params = dict(
             sample_rate=16000,
             speech_model=STREAMING_SPEECH_MODEL,
@@ -372,6 +406,11 @@ def main():
                 max_speakers=SIDECAR_MAX_SPEAKERS,
                 include_partial_turns=True,
                 continuous_partials=True,
+            )
+        elif SPEAKER_LABELS_ENABLED:
+            params.update(
+                speaker_labels=True,
+                max_speakers=SIDECAR_MAX_SPEAKERS,
             )
         client.connect(StreamingParameters(**params))
 

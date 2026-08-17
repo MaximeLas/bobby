@@ -42,6 +42,7 @@ TEST_MODULES = [
     "test_brain",
     "test_suggestions",
     "test_sidecar",
+    "test_audio_capture",
 ]
 
 
