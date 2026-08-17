@@ -8,22 +8,37 @@ short spoken answer, grounded in the recent transcript (and, if an agent is
 running, the tail of agent_progress.txt — so "Hey Bobby, how's it going?"
 works mid-build).
 
-v1 uses the `claude` CLI (no API key, no new billing — rides the user's
-existing login) with a fast model. Swap _run_llm() for a direct API call if
-the ~5-15s CLI latency ever feels too slow in a live meeting.
+Two LLM paths, picked automatically per call:
+- Anthropic API (~1-3s): used when ANTHROPIC_API_KEY is set and the
+  `anthropic` package is installed (`uv sync --extra brain`).
+- `claude` CLI (~5-15s): the zero-config fallback — no API key, no new
+  billing, rides the user's existing login. Also the safety net when an
+  API call fails mid-meeting.
 """
 
+import os
 import re
 import subprocess
 import tempfile
 
+from dotenv import load_dotenv
+
 from bobby.agent_runner import _clean_agent_env
 from bobby.prompts import BRAIN_PROMPT_TEMPLATE, BRAIN_PROGRESS_SECTION_TEMPLATE
 
+# ANTHROPIC_API_KEY may live in .env alongside the other keys
+load_dotenv()
+
 # Fast model for meeting-speed answers; quality matters less than latency
 # and the answers are 1-3 sentences anyway.
-BRAIN_MODEL = "haiku"
+BRAIN_MODEL = "haiku"  # claude CLI model name
 BRAIN_TIMEOUT_SECONDS = 90
+
+# API path equivalents. Answers are capped small — the prompt demands
+# 1-3 spoken sentences, so 300 tokens is generous headroom.
+BRAIN_API_MODEL = "claude-haiku-4-5"
+BRAIN_API_TIMEOUT_SECONDS = 30
+BRAIN_API_MAX_TOKENS = 300
 
 
 def build_brain_prompt(context, progress_tail=None):
@@ -50,7 +65,48 @@ def strip_for_speech(text):
     return " ".join(text.split()).strip()
 
 
-def _run_llm(prompt):
+def _api_available():
+    """
+    True when the direct Anthropic API path can be used: ANTHROPIC_API_KEY
+    is set AND the optional `anthropic` package is installed.
+
+    Checked per call (not at import) so a key added to the environment
+    mid-session takes effect without a restart.
+    """
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return False
+    try:
+        import anthropic  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _run_llm_api(prompt):
+    """
+    One-shot LLM call via the Anthropic API (~1-3s vs ~5-15s for the CLI).
+
+    Any failure (auth, network, rate limit) raises — _run_llm catches and
+    falls back to the CLI, so a bad key can't silence Bobby mid-meeting.
+    """
+    import anthropic
+
+    client = anthropic.Anthropic(
+        timeout=BRAIN_API_TIMEOUT_SECONDS,
+        max_retries=1,  # a meeting answer that arrives late is worthless
+    )
+    response = client.messages.create(
+        model=BRAIN_API_MODEL,
+        max_tokens=BRAIN_API_MAX_TOKENS,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = "".join(
+        block.text for block in response.content if getattr(block, "type", "") == "text"
+    )
+    return text.strip()
+
+
+def _run_llm_cli(prompt):
     """
     One-shot LLM call via the claude CLI. Runs in a neutral cwd so the CLI
     has no workspace to wander; the prompt instructs answering from provided
@@ -69,6 +125,18 @@ def _run_llm(prompt):
             f"brain LLM call failed (rc={result.returncode}): {result.stderr.strip()[:200]}"
         )
     return result.stdout.strip()
+
+
+def _run_llm(prompt):
+    """
+    Dispatch to the fastest available LLM path: API first, CLI fallback.
+    """
+    if _api_available():
+        try:
+            return _run_llm_api(prompt)
+        except Exception as e:
+            print(f"Brain API call failed ({e}); falling back to CLI")
+    return _run_llm_cli(prompt)
 
 
 def ask_brain(context, progress_tail=None):

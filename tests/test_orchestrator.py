@@ -223,6 +223,46 @@ def test_get_recent_context_fewer_lines():
             TRANSCRIPT_FILE.unlink()
 
 
+# --- Converse route tests ---
+
+def test_converse_initial_state():
+    """Fresh orchestrator should accept the first converse trigger."""
+    from bobby.orchestrator import CONVERSE_DEBOUNCE_SECONDS
+    orch = _make_orchestrator()
+    assert orch.last_converse_time == 0
+    assert time.time() - orch.last_converse_time >= CONVERSE_DEBOUNCE_SECONDS
+
+
+def test_handle_conversation_speaks_answer():
+    """A brain answer gets spoken."""
+    from unittest.mock import patch, MagicMock
+    orch = _make_orchestrator()
+    orch.speak_bob = MagicMock()
+    with patch("bobby.brain.ask_brain", return_value="Is going very nice!"):
+        orch.handle_conversation()
+    orch.speak_bob.assert_called_once_with("Is going very nice!")
+
+
+def test_handle_conversation_speaks_fallback_on_failure():
+    """A brain failure (None) speaks the error line, not silence."""
+    from unittest.mock import patch, MagicMock
+    from bobby.prompts import VOICE_BRAIN_ERROR
+    orch = _make_orchestrator()
+    orch.speak_bob = MagicMock()
+    with patch("bobby.brain.ask_brain", return_value=None):
+        orch.handle_conversation()
+    orch.speak_bob.assert_called_once_with(VOICE_BRAIN_ERROR)
+
+
+def test_speak_bob_delegates_to_shared_helper():
+    """speak_bob must route through bobby.voice (single speech path)."""
+    from unittest.mock import patch
+    orch = _make_orchestrator()
+    with patch("bobby.orchestrator.speak_in_meeting") as fake_speak:
+        orch.speak_bob("Very nice!")
+    fake_speak.assert_called_once_with("Very nice!")
+
+
 # --- Import and instantiation tests ---
 
 def test_import_orchestrator():
@@ -261,6 +301,10 @@ ALL_TESTS = [
     ("Debounce: rejects within window", test_debounce_rejects_within_window),
     ("Debounce: accepts after window", test_debounce_accepts_after_window),
     ("Debounce: initial state accepts first trigger", test_debounce_initial_state),
+    ("Converse: initial state accepts first trigger", test_converse_initial_state),
+    ("Converse: brain answer is spoken", test_handle_conversation_speaks_answer),
+    ("Converse: brain failure speaks fallback line", test_handle_conversation_speaks_fallback_on_failure),
+    ("speak_bob delegates to shared voice helper", test_speak_bob_delegates_to_shared_helper),
     ("get_recent_context: last N lines", test_get_recent_context),
     ("get_recent_context: missing file", test_get_recent_context_missing_file),
     ("get_recent_context: fewer lines than requested", test_get_recent_context_fewer_lines),

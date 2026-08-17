@@ -87,26 +87,90 @@ def test_strip_collapses_whitespace():
 
 
 # --- ask_brain behavior (mocked CLI) ---
+# _api_available is forced False so these always exercise the CLI path,
+# regardless of whether the test machine has ANTHROPIC_API_KEY set.
 
 def test_ask_brain_success():
     """Happy path: CLI output is stripped and returned."""
     fake = MagicMock(returncode=0, stdout="Is going **very** nice!\n", stderr="")
-    with patch.object(brain.subprocess, "run", return_value=fake):
+    with patch.object(brain, "_api_available", return_value=False), \
+         patch.object(brain.subprocess, "run", return_value=fake):
         assert brain.ask_brain("[Max] Hey Bobby, status?") == "Is going very nice!"
 
 
 def test_ask_brain_failure_returns_none():
     """Non-zero CLI exit -> None (caller speaks the fallback line)."""
     fake = MagicMock(returncode=1, stdout="", stderr="boom")
-    with patch.object(brain.subprocess, "run", return_value=fake):
+    with patch.object(brain, "_api_available", return_value=False), \
+         patch.object(brain.subprocess, "run", return_value=fake):
         assert brain.ask_brain("[Max] Hey Bobby, status?") is None
 
 
 def test_ask_brain_empty_answer_returns_none():
     """Empty CLI output -> None, not an empty spoken line."""
     fake = MagicMock(returncode=0, stdout="   \n", stderr="")
-    with patch.object(brain.subprocess, "run", return_value=fake):
+    with patch.object(brain, "_api_available", return_value=False), \
+         patch.object(brain.subprocess, "run", return_value=fake):
         assert brain.ask_brain("[Max] Hey Bobby, status?") is None
+
+
+# --- API path and dispatch (mocked Anthropic client) ---
+
+def test_api_unavailable_without_key():
+    """No ANTHROPIC_API_KEY -> API path is off."""
+    import os
+    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    with patch.dict(os.environ, env, clear=True):
+        assert brain._api_available() is False
+
+
+def test_api_unavailable_without_package():
+    """Key set but `anthropic` package missing -> API path is off."""
+    import os
+    import sys
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}), \
+         patch.dict(sys.modules, {"anthropic": None}):
+        assert brain._api_available() is False
+
+
+def test_dispatch_prefers_api():
+    """When the API path is available, the CLI must not run."""
+    cli = MagicMock()
+    with patch.object(brain, "_api_available", return_value=True), \
+         patch.object(brain, "_run_llm_api", return_value="**Very** nice answer."), \
+         patch.object(brain, "_run_llm_cli", cli):
+        assert brain.ask_brain("[Max] Hey Bobby, status?") == "Very nice answer."
+        cli.assert_not_called()
+
+
+def test_dispatch_api_failure_falls_back_to_cli():
+    """An API error mid-meeting falls back to the CLI, not silence."""
+    with patch.object(brain, "_api_available", return_value=True), \
+         patch.object(brain, "_run_llm_api", side_effect=RuntimeError("401")), \
+         patch.object(brain, "_run_llm_cli", return_value="CLI saves the day."):
+        assert brain.ask_brain("[Max] Hey Bobby, status?") == "CLI saves the day."
+
+
+def test_run_llm_api_extracts_text_blocks():
+    """_run_llm_api joins text blocks and ignores non-text blocks."""
+    import sys
+    from types import SimpleNamespace
+
+    blocks = [
+        SimpleNamespace(type="thinking", thinking="hmm"),
+        SimpleNamespace(type="text", text="Great "),
+        SimpleNamespace(type="text", text="success!"),
+    ]
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = SimpleNamespace(content=blocks)
+    fake_module = MagicMock()
+    fake_module.Anthropic.return_value = fake_client
+
+    with patch.dict(sys.modules, {"anthropic": fake_module}):
+        assert brain._run_llm_api("prompt") == "Great success!"
+        kwargs = fake_client.messages.create.call_args.kwargs
+        assert kwargs["model"] == brain.BRAIN_API_MODEL
+        assert kwargs["max_tokens"] == brain.BRAIN_API_MAX_TOKENS
 
 
 ALL_TESTS = [
@@ -124,4 +188,9 @@ ALL_TESTS = [
     ("ask_brain: success path strips and returns", test_ask_brain_success),
     ("ask_brain: CLI failure returns None", test_ask_brain_failure_returns_none),
     ("ask_brain: empty answer returns None", test_ask_brain_empty_answer_returns_none),
+    ("API path: off without ANTHROPIC_API_KEY", test_api_unavailable_without_key),
+    ("API path: off without anthropic package", test_api_unavailable_without_package),
+    ("Dispatch: API preferred when available", test_dispatch_prefers_api),
+    ("Dispatch: API failure falls back to CLI", test_dispatch_api_failure_falls_back_to_cli),
+    ("API path: extracts text blocks from response", test_run_llm_api_extracts_text_blocks),
 ]

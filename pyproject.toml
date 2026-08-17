@@ -15,6 +15,9 @@ dependencies = [
 discord = [
     "py-cord[voice]>=2.8.0",
 ]
+brain = [
+    "anthropic>=0.40",
+]
 
 [build-system]
 requires = ["hatchling"]

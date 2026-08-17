@@ -17,18 +17,21 @@ The novel part: not just transcription or note-taking, but actual code execution
 - Trigger detection ("Hey Bobby, please build this") with debounce
 - Claude Code agent launch with meeting context
 - Resume trigger ("Thank you, Bobby") to answer agent questions
+- Conversational brain: "Hey Bobby, \<anything else\>" gets a spoken, transcript-grounded answer (`bobby/brain.py` — Anthropic API fast path when `ANTHROPIC_API_KEY` is set, `claude` CLI fallback)
+- Proactive suggestions (opt-in, `BOBBY_PROACTIVE=1`): Bobby offers to build features he hears discussed (`bobby/suggestions.py`)
 - Text-to-speech via ElevenLabs (Eastern European Borat-style voice) with macOS `say` fallback
+- Full voice loop: acknowledgements, questions, completions, and errors are spoken in both modes (local mode speaks via `bobby/voice.py`; progress watcher takes `--no-voice` to disable)
 
 **Discord-specific features:**
 - Per-speaker audio routing (each user gets their own Assembly AI session)
 - Auto-join/leave voice channel via `DISCORD_VOICE_CHANNEL_ID`
 - Progress embeds with dynamic task names, bold question labels, thread detail logs
 - Voice output into Discord (ElevenLabs → FFmpegPCMAudio)
+- Converse works mid-build ("Hey Bobby, how is it going?" reads agent progress); in local mode the orchestrator blocks during builds, so converse only answers while idle
 
 **What's not done:**
 - BlackHole aggregate device for capturing Zoom/Meet audio in local mode
 - Multi-meeting support (parallel projects in different channels)
-- Proactive suggestions (Bobby offers to build things without explicit triggers)
 
 ## Architecture
 
@@ -71,7 +74,12 @@ Microphone/BlackHole
                                |                    |
                         [TTS / Voice]     [Progress Watcher]
                         Bobby speaks      Rich UI + notifications
+                                          + spoken questions/completions
 ```
+
+Both local components speak through `bobby/voice.py`, which coordinates
+with audio capture (pause flag + self-speech filtering) so Bobby doesn't
+transcribe his own voice.
 
 ### Key Design Decisions
 
@@ -87,6 +95,12 @@ All file paths are centralized in `bobby/config.py`. Bobby defaults to operating
 
 ```bash
 BOBBY_WORKSPACE=~/Projects/my-app ./start_bobby.sh
+```
+
+When the target workspace's dev server isn't Vite on 5173, set the URL the agent deploys to and reports (e.g. Next.js on 3000):
+
+```bash
+BOBBY_WORKSPACE=~/Projects/publico-demo BOBBY_DEV_URL=http://localhost:3000 uv run python start_discord.py
 ```
 
 All modules import paths from config rather than hardcoding them.
@@ -113,6 +127,8 @@ Discord mode requires: `brew install ffmpeg opus`
 
 - **"Hey Bobby, please build this"** — Launches a new Claude Code agent with recent meeting context
 - **"Thank you, Bobby"** — Resumes an agent that asked a question
+- **"Hey Bobby, \<anything else\>"** — Spoken, transcript-grounded answer from the brain (`bobby/brain.py`). Precedence: the launch phrase contains "hey bobby", so launch/resume are checked first.
+- **No trigger needed** (opt-in): with `BOBBY_PROACTIVE=1`, Bobby offers to build concrete, small features he hears discussed (`bobby/suggestions.py` — heavily debounced, one offer per 5 min, never mid-build)
 
 ### Agent protocol
 
@@ -140,8 +156,9 @@ The right granularity depends on the change. A single-purpose bug fix needs one 
 
 ## For Agents Working on This Codebase
 
-- All file paths come from `bobby/config.py` — never hardcode workspace paths
-- `bobby/prompts.py` is the single source of truth for Bobby's personality (Borat-style Eastern European accent), all voice lines, and the agent prompt template. Don't hardcode voice strings elsewhere.
+- All file paths come from `bobby/config.py` — never hardcode workspace paths (nor dev-server URLs: use `config.DEV_SERVER_URL`)
+- `bobby/prompts.py` is the single source of truth for Bobby's personality (Borat-style Eastern European accent), all voice lines, and every prompt template (agent, brain, proactive). Don't hardcode voice strings elsewhere.
+- All local-mode speech goes through `bobby/voice.py` (`speak_in_meeting`) — it owns the pause-flag/self-speech coordination with audio capture. Discord mode speaks via `discord_bot._speak_in_voice` instead (no mic feedback there).
 - Bobby's voice uses ElevenLabs with voice ID `lIaJUjvN2nyLPU9wRIa0` (requires paid plan; macOS `say` is the fallback)
 - Audio capture in local mode defaults to `USE_DEFAULT_MIC = True` in `audio_capture.py` — set to `False` for BlackHole/production
 - TTS uses `subprocess.run()` for audio playback — never use `os.system()` (shell injection risk)
