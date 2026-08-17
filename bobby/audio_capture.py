@@ -24,8 +24,14 @@ from bobby.config import (
     STREAMING_SPEECH_MODEL,
     STREAMING_PROMPT,
     STREAMING_KEYTERMS,
+    SIDECAR_MODE,
+    SIDECAR_MAX_SPEAKERS,
+    EVENTS_FILE,
+    SPEAKER_NAMES,
+    SPEAKER_NAMES_FILE,
 )
 from bobby.streaming import should_write_turn
+from bobby.sidecar import SidecarWriter
 from assemblyai.streaming.v3 import (
     BeginEvent,
     StreamingClient,
@@ -50,6 +56,12 @@ client = None
 # Tracks turn_order values already written this session, so each finalized turn
 # is written exactly once regardless of how the model emits it (see on_turn).
 _written_turn_orders = set()
+
+# Sidecar mode (BOBBY_SIDECAR=1): the v2 pipeline replaces write_transcript —
+# every event goes to events.jsonl and the transcript becomes a derived view
+# with live partials, speaker labels, and retroactive label revisions.
+# Constructed in main() so it picks up the resolved workspace paths.
+_sidecar = None
 
 
 class BlackHoleAudioStream:
@@ -183,6 +195,8 @@ def on_begin(self, event: BeginEvent):
     """Called when streaming session starts"""
     global _written_turn_orders
     _written_turn_orders = set()  # fresh session => turn_order restarts
+    if _sidecar:
+        _sidecar.handle_event("Begin", event.model_dump())
     logger.info(f"Streaming session started: {event.id}")
     logger.info("Listening for audio... (Press Ctrl+C to stop)")
 
@@ -191,20 +205,37 @@ def on_turn(self, event: TurnEvent):
     """
     Called for each transcription turn.
 
-    Finalized-turn gating and dedupe live in streaming.should_write_turn
-    (shared with Discord mode — keep the two modes identical).
+    Wake-word mode: finalized-turn gating and dedupe live in
+    streaming.should_write_turn (shared with Discord mode — keep the two
+    modes identical). Partials are discarded there so a trigger can't fire
+    mid-word, and the transcript has no speaker labels.
+
+    Sidecar mode (BOBBY_SIDECAR=1): every turn event — partials included —
+    feeds the v2 pipeline (bobby/sidecar.py), which logs it to events.jsonl
+    and re-renders the transcript with labels, a live partial line, and
+    overlap recovery. See docs/2026-08-05-sidecar-v2-design.md.
     """
+    if _sidecar:
+        _sidecar.handle_event("Turn", event.model_dump())
+        return
     if should_write_turn(event, _written_turn_orders):
-        # Single-channel capture: all speakers share one transcript, no labels.
-        # Universal-3.5 Pro can diarize (speaker_labels=True, up to ~10
-        # speakers), but speaker identity is intentionally low priority.
         write_transcript(event.transcript)
+
+
+def on_speaker_revision(self, event):
+    """Sidecar mode only: server retroactively revised earlier turns' labels."""
+    if _sidecar:
+        _sidecar.handle_event("SpeakerRevision", event.model_dump())
 
 
 def on_terminated(self, event: TerminationEvent):
     """Called when streaming session ends"""
+    if _sidecar:
+        _sidecar.handle_event("Termination", event.model_dump())
+    duration = event.audio_duration_seconds
     logger.info(
-        f"Session terminated: {event.audio_duration_seconds:.1f} seconds of audio processed"
+        "Session terminated: "
+        + (f"{duration:.1f} seconds of audio processed" if duration is not None else "no duration reported")
     )
 
 
@@ -250,13 +281,14 @@ def check_environment():
 
 def main():
     """Main function to run audio capture and transcription"""
-    global client
+    global client, _sidecar
 
     # Set up signal handler for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
 
     logger.info("=" * 60)
-    logger.info("Bobby Audio Capture - Component 1")
+    logger.info("Bobby Audio Capture - Component 1"
+                + (" [SIDECAR v2]" if SIDECAR_MODE else ""))
     logger.info("=" * 60)
 
     # Check environment
@@ -267,9 +299,21 @@ def main():
     # Write session header to transcript
     logger.info(f"Writing transcripts to: {TRANSCRIPT_FILE}")
 
-    timestamp = get_timestamp()
-    with open(TRANSCRIPT_FILE, 'a') as f:
-        f.write(f"\n[{timestamp}] === New Recording Session ===\n\n")
+    if SIDECAR_MODE:
+        # v2 pipeline: transcript is a derived view the writer rewrites in
+        # full, so no append-mode session header — events.jsonl carries the
+        # session boundaries instead.
+        _sidecar = SidecarWriter(
+            TRANSCRIPT_FILE,
+            EVENTS_FILE,
+            speaker_names=SPEAKER_NAMES,
+            speaker_names_file=SPEAKER_NAMES_FILE,
+        )
+        logger.info(f"Sidecar event log: {EVENTS_FILE}")
+    else:
+        timestamp = get_timestamp()
+        with open(TRANSCRIPT_FILE, 'a') as f:
+            f.write(f"\n[{timestamp}] === New Recording Session ===\n\n")
 
     # Create audio stream
     # Set use_default_mic=True to test with your MacBook mic
@@ -304,19 +348,32 @@ def main():
         client.on(StreamingEvents.Turn, on_turn)
         client.on(StreamingEvents.Termination, on_terminated)
         client.on(StreamingEvents.Error, on_error)
+        if SIDECAR_MODE:
+            client.on(StreamingEvents.SpeakerRevision, on_speaker_revision)
 
         # Connect with streaming parameters.
         # speech_model + prompt + keyterms come from config (shared with Discord
         # mode). format_turns is intentionally omitted: Universal-3.5 Pro formats
         # finalized turns inline, and on_turn dedupes by turn_order regardless.
-        client.connect(
-            StreamingParameters(
-                sample_rate=16000,
-                speech_model=STREAMING_SPEECH_MODEL,
-                prompt=STREAMING_PROMPT,
-                keyterms_prompt=STREAMING_KEYTERMS,
-            )
+        # Sidecar mode adds diarization + partials — measured on the 2026-08-04
+        # call replay: labels ~99% word-accurate, finals every ~10s instead of
+        # 60s walls, and partials carry overlapped interjections (see
+        # docs/2026-08-05-sidecar-v2-design.md). Wake-word mode keeps the lean
+        # parameters — its trigger path never consumes partials or labels.
+        params = dict(
+            sample_rate=16000,
+            speech_model=STREAMING_SPEECH_MODEL,
+            prompt=STREAMING_PROMPT,
+            keyterms_prompt=STREAMING_KEYTERMS,
         )
+        if SIDECAR_MODE:
+            params.update(
+                speaker_labels=True,
+                max_speakers=SIDECAR_MAX_SPEAKERS,
+                include_partial_turns=True,
+                continuous_partials=True,
+            )
+        client.connect(StreamingParameters(**params))
 
         logger.info("Connected to Assembly AI")
         logger.info("Starting real-time transcription...")

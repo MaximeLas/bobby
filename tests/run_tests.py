@@ -41,6 +41,7 @@ TEST_MODULES = [
     "test_voice",
     "test_brain",
     "test_suggestions",
+    "test_sidecar",
 ]
 
 

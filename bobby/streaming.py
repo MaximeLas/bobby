@@ -9,8 +9,13 @@ def should_write_turn(event, seen_turn_orders):
     Decide whether an AssemblyAI TurnEvent should be written to the
     transcript, recording it in seen_turn_orders when the answer is yes.
 
-    We act only on FINALIZED turns, never partial/interim ones — partial
-    transcripts are untrustworthy and could fire a trigger mid-word.
+    We act only on FINALIZED turns, never partial/interim ones — a partial
+    transcript could fire a trigger mid-word. Note this is wake-word-mode
+    POLICY, not a data limitation: the server streams partials by default
+    (~1s cadence), and they even carry overlapped interjections that the
+    final turn-commit then drops (measured 2026-08-05, same-audio replay).
+    Sidecar mode should consume partials via its own path instead of this
+    gate — see docs/2026-08-05-sidecar-v2-design.md.
 
     Turn emission differs by model. Older streaming models sent each
     finalized turn twice (unformatted, then formatted, same turn_order);
